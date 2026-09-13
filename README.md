@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.19.20`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.19.21`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,18 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.19.21
+
+**A co-commit can no longer re-commit bytes the quorum already rejected.** A co-commit commits on block inclusion and never runs the voter, so the content-hash dedup that keeps a rejected memory's exact bytes out was skipped on that one write path: a jointly-signed envelope could re-admit content that had been deprecated, under a fresh memory id, while the same bytes submitted through `POST /v1/memory/submit` were refused as a duplicate. `POST /v1/cocommit/submit` now consults the same lookup before it broadcasts and refuses a tombstoned hash with `409 Tombstoned content`; the envelope's own `SharedID` is excluded so an idempotent re-send still works. It is a submission-boundary check rather than a consensus rule — the consensus path deliberately reads no off-chain state — so a node that broadcasts a co-commit transaction directly, bypassing its own REST surface, is not covered by it.
+
+**The MCP client stopped keeping its own duplicate rule.** `sage_remember`, `sage_observe` and `sage_reflect` used to drop a write when more than 60% of its significant words appeared inside one of the first 50 committed memories in the domain — silently, order-dependently, and only on MCP, so the same write over REST or the SDK landed. They now report the node's own verdict: `POST /v1/memory/pre-validate` runs the same dedup, quality and consistency checks the vote applies, an exact duplicate comes back as `status: "skipped"` carrying the node's reason, and a memory that merely shares vocabulary with an existing one is stored instead of discarded.
+
+Also in this release: the `validated` status is documented as declared-but-unwritten (nothing has ever produced it, and recall would hide such a row), an unused `ValidateMemoryRecord` that duplicated the REST validator is gone, and the reference docs state plainly that knowledge triples and `access_logs` are write-only.
+
+No consensus change or chain migration; app-v27 remains the ceiling.
+
+Container: `ghcr.io/l33tdawg/sage:11.19.21`. SDK 11.19.21.
 
 ## What's New in v11.19.20
 
