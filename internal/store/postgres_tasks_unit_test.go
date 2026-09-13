@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pashagolub/pgxmock/v4"
+	"github.com/pashagolub/pgxmock/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/l33tdawg/sage/internal/memory"
