@@ -24,7 +24,7 @@ The architecture is described in [Paper 1: Agent Memory Infrastructure](papers/P
 open SAGE, then use CEREBRUM to connect your AI. For a full walkthrough, see
 [Getting Started](docs/GETTING_STARTED.md).
 
-**From source (Go 1.25.13+):**
+**From source (Go 1.26.8+):**
 
 ```bash
 git clone https://github.com/l33tdawg/sage.git && cd sage
