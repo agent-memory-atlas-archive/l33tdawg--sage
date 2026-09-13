@@ -43,8 +43,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Deliberately go-version-file, NOT go-version: '1.25'. A floating
-          # '1.25' resolves to the newest patch release, which would scan a
+          # Deliberately go-version-file, NOT go-version: '1.26'. A floating
+          # '1.26' resolves to the newest patch release, which would scan a
           # toolchain nobody is required to build with and hide the real
           # question. Scanning the version go.mod actually mandates is what
           # makes this job catch the floor drifting behind the stdlib fixes.

@@ -199,7 +199,7 @@ test('metadata, source, race, frontend, and fault checks converge before packagi
 
 test('release and CI vulnerability gates scan the exact mandated Go floor', () => {
   for (const source of [workflow, ciWorkflow, codeqlWorkflow, faultWorkflow]) {
-    assert.doesNotMatch(source, /^\s+go-version: '1\.25'$/m);
+    assert.doesNotMatch(source, /^\s+go-version: '1\.26'$/m);
     assert.match(source, /go-version-file: go\.mod/);
   }
   for (const source of [job('vulncheck'), ciJob('vulncheck')]) {
@@ -211,7 +211,7 @@ test('release and CI vulnerability gates scan the exact mandated Go floor', () =
     '../go.mod',
     '../natter/go.mod',
   ]) {
-    assert.match(readFileSync(new URL(path, import.meta.url), 'utf8'), /^go 1\.25\.13$/m);
+    assert.match(readFileSync(new URL(path, import.meta.url), 'utf8'), /^go 1\.26\.8$/m);
   }
   for (const [path, stage] of [
     ['../Dockerfile', 'builder'],
@@ -221,11 +221,11 @@ test('release and CI vulnerability gates scan the exact mandated Go floor', () =
     ['../deploy/federation-acceptance/Dockerfile.natter', 'build'],
   ]) {
     const source = readFileSync(new URL(path, import.meta.url), 'utf8');
-    assert.match(source, new RegExp(`^FROM golang:1\\.25\\.13-alpine AS ${stage}$`, 'm'));
+    assert.match(source, new RegExp(`^FROM golang:1\\.26\\.8-alpine AS ${stage}$`, 'm'));
   }
   assert.match(
     readFileSync(new URL('../deploy/init-testnet.sh', import.meta.url), 'utf8'),
-    /golang:1\.25\.13-alpine/,
+    /golang:1\.26\.8-alpine/,
   );
 });
 

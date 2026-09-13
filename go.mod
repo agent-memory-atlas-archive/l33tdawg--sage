@@ -1,6 +1,6 @@
 module github.com/l33tdawg/sage
 
-go 1.25.13
+go 1.26.8
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
