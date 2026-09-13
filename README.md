@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.19.21`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.19.22`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,20 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.19.22
+
+**The Go build floor moves to patched 1.26.8.** Both modules now declare `go 1.26.8`, up from `1.25.13`, and every Go container builder moved with them: `Dockerfile`, `deploy/Dockerfile.abci`, `deploy/Dockerfile.node`, both federation-acceptance Dockerfiles and `deploy/init-testnet.sh`. Building from source now requires Go 1.26.8 or later.
+
+This is not a fix for a hole you have. v11.19.21 and everything before it were built with Go 1.25.13, and that toolchain scans clean on its own standard library. It is a deliberate move forward: the dependency group below requires Go 1.26, and the bare `1.26.0` those tools would otherwise have pinned is precisely the version `govulncheck` reports 26 reachable standard-library advisories against — among them `net/url` (GO-2026-6218), `html/template` (GO-2026-6091), `crypto/tls` (GO-2026-6090, GO-2026-5856), `net/http` (GO-2026-6089, GO-2026-5026), `encoding/xml` (GO-2026-6088), `encoding/asn1` (GO-2026-5972), `net/textproto` (GO-2026-5039) and `crypto/x509` (GO-2026-5037). 1.26.6 is the minimum fix for those; 1.26.8 is the newest patch of the line, and on it the vulnerability gate reports no reachable vulnerabilities in either module.
+
+**Dependencies refreshed.** `github.com/jackc/pgx/v5` v5.11.0, `github.com/klauspost/compress` v1.20.0, `golang.org/x/crypto` v0.57.0, `golang.org/x/sync` v0.23.0, `golang.org/x/sys` v0.48.0, `golang.org/x/tools` v0.50.0 and `modernc.org/sqlite` v1.58.0, plus the `x/net`, `x/mod`, `x/text` and `x/telemetry` indirects. The SQLite driver moves to SQLite 3.53.4, which carries upstream's own journal-rollback fix — the reason the local super-journal patch existed — so that patch retires with no change to recovery behaviour. The pgx bump adds `TypeMap` to the `pgx.Rows` interface, so the store tests move from `pgxmock/v4` to `pgxmock/v5`; that is a test-only import change with no runtime effect.
+
+Also in this release: `golang.org/x/crypto` still carries GO-2026-5932 at v0.57.0, its newest release. It is in the module graph and is not reachable from SAGE code; the gate reports it as uncalled rather than failing.
+
+No consensus change or chain migration; app-v27 remains the ceiling.
+
+Container: `ghcr.io/l33tdawg/sage:11.19.22`. SDK 11.19.22.
 
 ## What's New in v11.19.21
 

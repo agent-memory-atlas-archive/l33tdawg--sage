@@ -1,6 +1,6 @@
 # SAGE Roadmap
 
-**Status (2026-09):** **v11.19.21 is the current release.** A co-commit can no longer re-commit bytes the quorum already rejected — the REST submit boundary refuses a tombstoned content hash before it broadcasts — and the MCP client reports the node's own dedup verdict instead of scoring word overlap against a window of memories, so near-duplicates are stored and exact duplicates are skipped with the node's reason. Voter dedup is sticky — rejected, challenged, or forgotten content cannot be re-admitted under a fresh memory id while genuine corrections still pass — and the dedup lookup is indexed on SQLite and Postgres. The gRPC-Go dependency is patched to v1.83.2 for CVE-2026-84445. CEREBRUM adds a federation connectome, live metadata activity, clearer pairing steps, and explicit memory-sharing drafts. Trusted paired nodes now discover and
+**Status (2026-09):** **v11.19.22 is the current release.** The Go build floor moves to patched Go 1.26.8 and the Go dependency group is refreshed — pgx v5.11.0, x/crypto v0.57.0, x/sync v0.23.0, x/sys v0.48.0, x/tools v0.50.0, klauspost/compress v1.20.0 and modernc.org/sqlite v1.58.0 (SQLite 3.53.4) — with the shipped binaries unchanged in behaviour and source builds now requiring Go 1.26.8+. A co-commit can no longer re-commit bytes the quorum already rejected — the REST submit boundary refuses a tombstoned content hash before it broadcasts — and the MCP client reports the node's own dedup verdict instead of scoring word overlap against a window of memories, so near-duplicates are stored and exact duplicates are skipped with the node's reason. Voter dedup is sticky — rejected, challenged, or forgotten content cannot be re-admitted under a fresh memory id while genuine corrections still pass — and the dedup lookup is indexed on SQLite and Postgres. The gRPC-Go dependency is patched to v1.83.2 for CVE-2026-84445. CEREBRUM adds a federation connectome, live metadata activity, clearer pairing steps, and explicit memory-sharing drafts. Trusted paired nodes now discover and
 message eligible ordinary agents automatically, with memory sharing separately
 configured. It keeps safe registered-name addressing and
 reply-event visibility, the three-tab Access Controls redesign, five-minute
@@ -158,6 +158,10 @@ ceiling is app-v27.
 upgrade in place across all future releases. Routine personal-node upgrades
 remain automatic; the exceptional legacy-lineage repair is deliberately an
 explicit, reviewed operator ceremony rather than a silent mutation.
+
+## v11.19.22 release
+
+The Go build floor moves from 1.25.13 to patched Go 1.26.8 in both the root and `natter` modules, and every Go container builder moves with it (`Dockerfile`, `deploy/Dockerfile.abci`, `deploy/Dockerfile.node`, both federation-acceptance Dockerfiles, `deploy/init-testnet.sh`); source builds now require Go 1.26.8 or later. The Go dependency group is refreshed to pgx v5.11.0, klauspost/compress v1.20.0, x/crypto v0.57.0, x/sync v0.23.0, x/sys v0.48.0, x/tools v0.50.0 and modernc.org/sqlite v1.58.0 — SQLite 3.53.4, whose upstream journal-rollback fix retires the local super-journal patch — with the store tests moving from pgxmock/v4 to pgxmock/v5 for the new `pgx.Rows.TypeMap` method. Nothing in the shipped binaries' behaviour changes and the chain is untouched: the floor move is what lets the dependency group land at all, because it requires Go 1.26 and the bare 1.26.0 that would otherwise be pinned is itself the version carrying 26 reachable standard-library advisories. No consensus change; app-v27 remains the ceiling.
 
 ## v11.19.21 release
 
