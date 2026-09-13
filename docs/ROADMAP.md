@@ -1,6 +1,6 @@
 # SAGE Roadmap
 
-**Status (2026-09):** **v11.19.20 is the current release.** Voter dedup is sticky — rejected, challenged, or forgotten content cannot be re-admitted under a fresh memory id while genuine corrections still pass — and the dedup lookup is indexed on SQLite and Postgres. The gRPC-Go dependency is patched to v1.83.2 for CVE-2026-84445. CEREBRUM adds a federation connectome, live metadata activity, clearer pairing steps, and explicit memory-sharing drafts. Trusted paired nodes now discover and
+**Status (2026-09):** **v11.19.21 is the current release.** A co-commit can no longer re-commit bytes the quorum already rejected — the REST submit boundary refuses a tombstoned content hash before it broadcasts — and the MCP client reports the node's own dedup verdict instead of scoring word overlap against a window of memories, so near-duplicates are stored and exact duplicates are skipped with the node's reason. Voter dedup is sticky — rejected, challenged, or forgotten content cannot be re-admitted under a fresh memory id while genuine corrections still pass — and the dedup lookup is indexed on SQLite and Postgres. The gRPC-Go dependency is patched to v1.83.2 for CVE-2026-84445. CEREBRUM adds a federation connectome, live metadata activity, clearer pairing steps, and explicit memory-sharing drafts. Trusted paired nodes now discover and
 message eligible ordinary agents automatically, with memory sharing separately
 configured. It keeps safe registered-name addressing and
 reply-event visibility, the three-tab Access Controls redesign, five-minute
@@ -158,6 +158,10 @@ ceiling is app-v27.
 upgrade in place across all future releases. Routine personal-node upgrades
 remain automatic; the exceptional legacy-lineage repair is deliberately an
 explicit, reviewed operator ceremony rather than a silent mutation.
+
+## v11.19.21 release
+
+A co-commit can no longer re-commit content the quorum already rejected: `POST /v1/cocommit/submit` consults the content-hash dedup before it broadcasts and refuses a tombstoned hash with `409 Tombstoned content`, excluding the envelope's own `SharedID` so an idempotent re-send still works. This is a submission-boundary check, not a consensus rule — the consensus path reads no off-chain state — so a node that broadcasts the transaction directly is not covered. The MCP client no longer keeps its own >60%-word-overlap duplicate heuristic: it reports the node's `pre-validate` verdict, so an exact duplicate is a skip carrying the node's reason and a near-duplicate is stored. Docs mark `validated` as declared-but-unwritten and state that knowledge triples and `access_logs` are write-only. No consensus change; app-v27 remains the ceiling.
 
 ## v11.19.20 release
 

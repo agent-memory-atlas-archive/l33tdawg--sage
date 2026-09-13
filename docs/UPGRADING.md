@@ -184,6 +184,7 @@ Use this to work out how far your chain has to climb.
 | v11.19.18 | Visible federation agent orbits and reliable interaction pause/resume; no consensus change and app-v27 remains the ceiling |
 | v11.19.19 | gRPC-Go v1.83.2 patches the xDS missing-authority-header denial of service (CVE-2026-84445); no consensus or storage migration and app-v27 remains the ceiling |
 | v11.19.20 | Voter dedup is sticky: rejected, challenged, or forgotten content cannot re-enter under a fresh memory id, a candidate never self-matches, concurrent identical submissions no longer veto each other, and corrections still pass when the content changed; the content_hash dedup lookup gains an index on SQLite and Postgres (one-time Postgres rebuild at first boot); no consensus change and app-v27 remains the ceiling |
+| v11.19.21 | Co-commit tombstones: a co-commit can no longer re-commit bytes the quorum already rejected (the REST submit boundary refuses a tombstoned content hash with 409 before it broadcasts; a transaction broadcast directly to the chain is not covered), and the MCP client reports the node's own dedup verdict instead of a >60%-word-overlap heuristic, so near-duplicates are stored and exact duplicates are skipped with the node's reason; no consensus change and app-v27 remains the ceiling |
 
 ### v11.18.3 — the signer fence, and what it does *not* cover
 
