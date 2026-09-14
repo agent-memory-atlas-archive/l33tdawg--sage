@@ -287,7 +287,7 @@ func LoadConfig() (*Config, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			if os.Getenv("SAGE_LANTERN_PRIVATE_LISTENERS") != "" {
-				return nil, errors.New("Lantern private node requires explicit configuration")
+				return nil, errors.New("lantern private node requires explicit configuration")
 			}
 			applyEnvOverrides(cfg)
 			if vErr := cfg.validate(); vErr != nil {

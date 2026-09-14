@@ -218,7 +218,7 @@ func (media *PrivateMediaStore) Put(ctx context.Context, actor, identifier strin
 	if err != nil {
 		return nil, ErrPrivateMediaUnavailable
 	}
-	defer transaction.Rollback()
+	defer transaction.Rollback() //nolint:errcheck
 	current, err := readPrivateJPEG(ctx, transaction, active, actor, identifier)
 	if err == nil {
 		if bytes.Equal(current.JPEG, image) {

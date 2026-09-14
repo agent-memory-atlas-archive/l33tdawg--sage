@@ -86,7 +86,7 @@ func (s *SQLiteStore) ListWorkflowJournal(ctx context.Context, agentID, afterUUI
 	if err != nil {
 		return nil, fmt.Errorf("begin workflow journal page: %w", err)
 	}
-	defer transaction.Rollback()
+	defer transaction.Rollback() //nolint:errcheck
 	rows, err := transaction.QueryContext(ctx, `SELECT record_id FROM workflow_journal WHERE agent_id = ? AND record_id > ? ORDER BY record_id LIMIT ?`, agentID, afterUUID, limit+1)
 	if err != nil {
 		return nil, fmt.Errorf("list workflow journal: %w", err)
@@ -366,7 +366,7 @@ func (s *SQLiteStore) PutWorkflowJournalGuarded(ctx context.Context, agentID, re
 	if err != nil {
 		return nil, fmt.Errorf("begin workflow journal: %w", err)
 	}
-	defer transaction.Rollback()
+	defer transaction.Rollback() //nolint:errcheck
 	if guard != nil {
 		control, err := readWorkflowJournal(ctx, transaction, active, agentID, condition.RecordID)
 		if errors.Is(err, ErrWorkflowJournalNotFound) {

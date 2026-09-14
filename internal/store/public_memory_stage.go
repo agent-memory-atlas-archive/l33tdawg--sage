@@ -37,12 +37,12 @@ func (s *BadgerStore) PreparePublicMemoryStage(ctx context.Context, height int64
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(directory)
+	defer func() { _ = os.RemoveAll(directory) }()
 	target, err := NewBadgerStore(directory)
 	if err != nil {
 		return err
 	}
-	defer target.CloseBadger()
+	defer func() { _ = target.CloseBadger() }()
 	migration, err := s.BuildPublicMemoryMigration(ctx, target)
 	if err != nil {
 		return err

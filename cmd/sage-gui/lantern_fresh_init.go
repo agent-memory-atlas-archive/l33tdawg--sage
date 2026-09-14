@@ -125,7 +125,7 @@ func runLanternFreshInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	result, err := initializeFreshLantern(lanternHome, cfg, initCometBFTConfigWithBootstrap, func(path string) (string, error) {
 		key, err := loadOrGenerateKey(path)
 		if err != nil {

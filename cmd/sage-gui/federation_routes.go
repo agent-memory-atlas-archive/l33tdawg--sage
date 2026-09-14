@@ -182,7 +182,7 @@ func dialFederationP2PRouteTargets(ctx context.Context, targets []string, dial f
 					return
 				}
 			}
-			candidateTimeout := federationP2PCandidateTimeout
+			var candidateTimeout time.Duration
 			if strings.Contains(target, "/p2p-circuit/") {
 				candidateTimeout = federationCandidateBudget("SAGE_FED_RELAY_CANDIDATE_TIMEOUT_MS", federationRelayCandidateTimeout)
 			} else {

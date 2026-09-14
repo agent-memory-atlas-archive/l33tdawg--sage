@@ -45,7 +45,7 @@ func (s *SQLiteStore) SendEncryptedLocalMessage(ctx context.Context, key string,
 	if err != nil {
 		return nil, false, fmt.Errorf("begin encrypted message: %w", err)
 	}
-	defer transaction.Rollback()
+	defer transaction.Rollback() //nolint:errcheck
 	result, replayed, err := s.transactionClone(transaction, false).SendLocalMessage(ctx, key, message)
 	if err != nil {
 		return nil, false, err

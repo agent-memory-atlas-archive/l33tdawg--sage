@@ -4197,7 +4197,7 @@ func (s *Server) toolBacklog(ctx context.Context, params map[string]any) (any, e
 	// node-side bound is reported separately as scan_capped.
 	visibleTotal := len(visible)
 
-	page := visible
+	var page []assignedTask
 	if offset >= len(visible) {
 		page = nil
 	} else {

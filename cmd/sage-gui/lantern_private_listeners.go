@@ -24,7 +24,7 @@ func validateLanternPrivateYAML(data []byte) error {
 	}
 	if explicit.Federation == nil || explicit.Federation.Enabled == nil || *explicit.Federation.Enabled ||
 		explicit.Quorum == nil || explicit.Quorum.Enabled == nil || *explicit.Quorum.Enabled {
-		return errors.New("Lantern private node requires explicit federation.enabled=false and quorum.enabled=false")
+		return errors.New("lantern private node requires explicit federation.enabled=false and quorum.enabled=false")
 	}
 	return nil
 }
@@ -38,11 +38,11 @@ func enforceLanternPrivateListeners(cfg *Config) error {
 		return errors.New("invalid Lantern private listener policy")
 	}
 	if cfg.Federation.Enabled || cfg.Quorum.Enabled {
-		return errors.New("Lantern private node forbids federation and quorum")
+		return errors.New("lantern private node forbids federation and quorum")
 	}
 	if cfg.RESTAddr != "127.0.0.1:8080" || cfg.Quorum.TLSAddr != "127.0.0.1:8443" ||
 		cmtRPCAddr() != "tcp://127.0.0.1:26657" || cmtP2PAddr("tcp://127.0.0.1:26656") != "tcp://127.0.0.1:26656" {
-		return errors.New("Lantern private node requires fixed loopback listeners")
+		return errors.New("lantern private node requires fixed loopback listeners")
 	}
 	return nil
 }
