@@ -21,7 +21,7 @@ func publicTestRecord(t *testing.T, scoped *BadgerStore, identifier string) {
 }
 
 func TestPublicMemoryIndexOrderProofAndTampering(t *testing.T) {
-	var roots [][32]byte
+	roots := make([][32]byte, 0, 2)
 	for _, order := range [][]string{{"one", "two", "three"}, {"three", "one", "two"}} {
 		base := newTestBadger(t)
 		scoped := base.BeginConsensusTransaction(nil)

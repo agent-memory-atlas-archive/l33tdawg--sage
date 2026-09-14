@@ -95,11 +95,11 @@ func (s *SQLiteStore) ListWorkflowJournal(ctx context.Context, agentID, afterUUI
 	for rows.Next() {
 		var identifier string
 		if err := rows.Scan(&identifier); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, fmt.Errorf("read workflow journal cursor: %w", err)
 		}
 		if !validWorkflowJournalIdentity(agentID, identifier) {
-			rows.Close()
+			_ = rows.Close()
 			return nil, ErrWorkflowJournalCorrupt
 		}
 		identifiers = append(identifiers, identifier)

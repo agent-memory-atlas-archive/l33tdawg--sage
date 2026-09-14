@@ -1140,7 +1140,15 @@ test('all private artifacts converge at one publication gate', () => {
     'native-shell-production-promotion',
   ]);
   assert.match(job('publication-gate'), /sha256sum -c checksums\.txt/);
-  assert.match(job('publication-gate'), /PYPI_API_TOKEN/);
+  // The gate used to require a PyPI token; publishing is Trusted Publishing
+  // (OIDC) now, so the token must be gone from both the gate and the publish
+  // step, and the step must carry the OIDC + environment binding that PyPI
+  // authenticates. A password in the publish step silently disables
+  // attestations, so this asserts the exact inverse of the old contract.
+  assert.doesNotMatch(job('publication-gate'), /PYPI_API_TOKEN/);
+  assert.doesNotMatch(job('publish-pypi'), /password:/);
+  assert.match(job('publish-pypi'), /id-token: write/);
+  assert.match(job('publish-pypi'), /environment: pypi/);
   assert.match(job('publication-gate'), /PyPI is immutable/);
   assert.match(job('publication-gate'), /remote != local/);
 });

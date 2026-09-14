@@ -106,7 +106,8 @@ func TestMessageStorageStatusRejectsUnsignedRootAndUnknownCaller(t *testing.T) {
 	require.NoError(t, sqlite.CreateAgent(t.Context(), &store.AgentEntry{
 		AgentID: appV23LookupVaultID(pendingKey), Name: "pending", Role: store.AppV23RoleMember, Status: "active", Clearance: 1,
 	}))
-	requests := []*http.Request{httptest.NewRequest(http.MethodGet, messageStoragePath, nil)}
+	requests := make([]*http.Request, 0, 4)
+	requests = append(requests, httptest.NewRequest(http.MethodGet, messageStoragePath, nil))
 	for _, label := range []string{"message-storage-root", "message-storage-unknown", "message-storage-pending"} {
 		key := appV23LookupVaultKey(label)
 		requests = append(requests, signedAgentLookupRequest(t, key, appV23LookupVaultID(key), messageStoragePath))
