@@ -524,10 +524,34 @@ func (m *Manager) buildPipelineEvent(ctx context.Context, ss *store.SQLiteStore,
 		}
 		event.OriginEventID = msg.SourcePipeID
 		event.SourcePipeID = msg.PipeID
+		// The destination re-derives this envelope's lifetime from the signed
+		// proof and admits nothing else, so take the wire values from the proof
+		// rather than from the retained outbox row. The row's own expires_at is
+		// the local retry deadline and may legitimately have been re-stamped by a
+		// retention migration; letting that value reach the peer is exactly how an
+		// already-completed reply turns into a permanent "invalid pipeline agent
+		// proof" (400) instead of a delivery.
+		created, expires := resultEnvelopeLifetime(outbox.Proof)
+		if !event.CreatedAt.Equal(created) || !event.ExpiresAt.Equal(expires) {
+			m.logger.Warn().Str("event_id", outbox.EventID).Str("pipe_id", outbox.PipeID).
+				Time("stored_created_at", event.CreatedAt).Time("stored_expires_at", event.ExpiresAt).
+				Msg("result transport row lifetime does not match its signed proof; sending the protocol lifetime")
+		}
+		event.CreatedAt, event.ExpiresAt = created, expires
 	default:
 		return nil, true, fmt.Errorf("unsupported pipeline outbox kind %q", outbox.EventKind)
 	}
 	return event, false, nil
+}
+
+// resultEnvelopeLifetime is the ONLY lifetime a destination accepts for a result
+// event (pipe_transport.go prevalidatePipeEventAgentProof and applyPipeResult
+// both demand created == proof.Timestamp and expires == created +
+// pipeEventResultLifetime). Deriving it from the signed proof keeps both sides
+// in agreement by construction, whatever the local retention state is.
+func resultEnvelopeLifetime(proof store.PipelineAgentProof) (created, expires time.Time) {
+	created = time.Unix(proof.Timestamp, 0).UTC()
+	return created, created.Add(pipeEventResultLifetime)
 }
 
 func (m *Manager) sourceMayUseFederatedPipe(agentID string) bool {

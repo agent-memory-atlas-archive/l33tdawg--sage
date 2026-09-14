@@ -318,6 +318,19 @@ func TestHandlePipeEventResultAppliesOnlyToBoundOriginAndDeduplicates(t *testing
 	rr = callPipeEvent(t, m, agreement, peerOperator, &wrongSource)
 	require.Equal(t, http.StatusBadRequest, rr.Code, "a result proof must bind its exact source chain: %s", rr.Body.String())
 
+	// The lifetime is part of the signed binding, not a local retention choice.
+	// Re-deriving it as created+pipeEventResultLifetime is the ONLY form the
+	// destination admits, so a result row whose expires_at was re-stamped by a
+	// transport-retention migration (this is how a receiver-local msg-fed-… row
+	// became 'msg-%'-matched) is rejected before admission exactly as the peer's
+	// "400 invalid pipeline agent proof" reported.
+	retentionExtended := *event
+	retentionExtended.ExpiresAt = event.CreatedAt.Add(store.CanonicalMessageLifetime)
+	rr = callPipeEvent(t, m, agreement, peerOperator, &retentionExtended)
+	require.Equal(t, http.StatusBadRequest, rr.Code,
+		"only the proof-derived lifetime may be admitted: %s", rr.Body.String())
+	require.Contains(t, rr.Body.String(), "invalid pipeline agent proof")
+
 	wrongOrigin := *event
 	wrongOrigin.OriginEventID = "pipe-event-" + hex.EncodeToString(sha256.New().Sum(nil))
 	rr = callPipeEvent(t, m, agreement, peerOperator, &wrongOrigin)
@@ -806,6 +819,13 @@ func TestPipelineOutboxResultPreflightFailureNeverPushesOrBuildsResultEnvelope(t
 	require.NoError(t, err)
 	require.False(t, terminal)
 	require.Empty(t, event.Result, "result bytes entered the outbound envelope before the fresh peer preflight")
+	// The outbox row above carries msg.ExpiresAt (one hour) as its expiry, which
+	// is what a retention re-stamp looks like to a reply. The envelope must be
+	// derived from the signed proof instead: the destination admits ONLY
+	// created+pipeEventResultLifetime and calls anything else an invalid proof.
+	require.Equal(t, now, event.CreatedAt)
+	require.Equal(t, now.Add(pipeEventResultLifetime), event.ExpiresAt,
+		"the wire lifetime must come from the signed proof, never from the retained row")
 
 	preflightCalls := 0
 	preflightPipeID := ""

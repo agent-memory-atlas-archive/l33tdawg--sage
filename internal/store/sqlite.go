@@ -934,10 +934,39 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 		return fmt.Errorf("migrate federated agent exposure: %w", err)
 	}
 	s.migratePipelineTransport(ctx)
+	// Extend retention for pending canonical SENDS that v11.17.8 stamped with the
+	// old pipeline TTL (ttl_minutes is documented as 0 durable, else 1-1440), so an
+	// upgrade does not drop work the peer never received.
+	//
+	// Two details here are load-bearing. The predicate must name the event kind:
+	// a destination re-derives a RESULT event's lifetime from the signed proof as
+	// exactly federation.pipeEventResultLifetime (24h) and rejects every other
+	// value as "invalid pipeline agent proof", while an imported federated message
+	// carries a receiver-local id of the form msg-fed-… that also matched 'msg-%'.
+	// And the value must be spelled '+36500 days': a destination recomputes a
+	// durable send as store.CanonicalMessageLifetime (100*365*24h) and compares the
+	// instants for equality, so SQLite's calendar '+100 years' (36524 days) landed
+	// 24 days off the sentinel and made every retry invalid — defeating the very
+	// rescue it performed.
+	//
+	// expires_at doubles as the retry deadline, so an over-extended row also loses
+	// its give-up path (ListPendingPipelineTransport, recordPipelineDeliveryError,
+	// PurgeExpiredPipelineTransport): it retries until it happens to reach the peer
+	// and collect the permanent 400.
 	if _, err := s.writeExecContext(ctx, `UPDATE pipeline_transport_outbox
-		SET expires_at=strftime('%Y-%m-%dT%H:%M:%fZ',created_at,'+100 years')
-		WHERE pipe_id LIKE 'msg-%' AND state='pending'`); err != nil {
+		SET expires_at=strftime('%Y-%m-%dT%H:%M:%fZ',created_at,'+36500 days')
+		WHERE event_kind='send' AND pipe_id LIKE 'msg-%' AND state='pending'`); err != nil {
 		return fmt.Errorf("extend canonical message transport retention: %w", err)
+	}
+	// Repair rows an earlier build already extended through that over-broad
+	// predicate: restore the only lifetime the destination will accept so a
+	// pending reply is deliverable again, and so an aged one terminalizes through
+	// the ordinary expiry sweep instead of retrying forever.
+	if _, err := s.writeExecContext(ctx, `UPDATE pipeline_transport_outbox
+		SET expires_at=strftime('%Y-%m-%dT%H:%M:%fZ',created_at,'+24 hours')
+		WHERE event_kind='result' AND state='pending'
+		  AND strftime('%s',expires_at)>strftime('%s',created_at,'+24 hours')`); err != nil {
+		return fmt.Errorf("restore foreign result transport retention: %w", err)
 	}
 	if err := s.migratePipelineV23SecurityColumns(ctx); err != nil {
 		return fmt.Errorf("migrate pipeline v23 authorization columns: %w", err)
