@@ -2835,7 +2835,9 @@ func (s *PostgresStore) GetOpenTasks(ctx context.Context, domain string, provide
 		argN++
 	}
 	_ = argN
-	query += " ORDER BY created_at DESC LIMIT 500"
+	// Same tiebreaker as SQLite: created_at alone is not a stable order for a
+	// second-resolution timestamp, so paging over it could skip or repeat rows.
+	query += " ORDER BY created_at DESC, memory_id ASC LIMIT 500"
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {

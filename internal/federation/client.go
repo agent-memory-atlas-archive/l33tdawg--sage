@@ -874,7 +874,7 @@ func (m *Manager) runPeerStatusRetry(parent context.Context, remoteChainID strin
 			m.routeRetryMu.Unlock()
 		})
 	}()
-	workflowCtx, cancel := context.WithTimeout(parent, routeRefreshTimeout+6*time.Second)
+	workflowCtx, cancel := context.WithTimeout(parent, m.routeRefreshBudget(remoteChainID)+6*time.Second)
 	defer cancel()
 	generation := routeBindingID(binding)
 	hint := m.routeRecoveryHint(remoteChainID, generation)

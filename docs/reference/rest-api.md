@@ -1,4 +1,4 @@
-<!-- Reconciled through SAGE v11.19.22. Cite file:line when behavior is non-obvious. -->
+<!-- Reconciled through SAGE v11.20.0. Cite file:line when behavior is non-obvious. -->
 
 # SAGE REST API Reference
 
@@ -485,17 +485,23 @@ Open task memories (type=`task`, status != `done`/`dropped`).
 
 **Query parameters:** `domain`, `provider`
 
-**Response:** `{"tasks": [{memory_id, content, domain_tag, task_status, assignee, task_picked_up_by, task_picked_up_at, confidence_score, created_at}], "total": N}`.
+**Response:** `{"tasks": [{memory_id, content, domain_tag, task_status, assignee, task_picked_up_by, task_picked_up_at, confidence_score, created_at}], "total": N, "returned": N, "scan_capped": false}`.
 For a signed agent this is an assigned-only feed: `assignee` is the exact
 authenticated agent ID, and unassigned or differently assigned tasks are not
 returned. Assignment is necessary but not sufficient: each row must also pass
 the caller's current domain/group/grant and classification authority. `total`
-is the visible number returned, never an underlying or denied task count.
+and `returned` are the visible number returned, never an underlying or denied
+task count. `scan_capped: true` means this response stopped at the node's scan
+bound, so the caller must narrow by domain or provider instead of treating the
+list as the whole board.
 
 Under app-v23, the built-in stores page the exact-assignee feed and apply live
 record disclosure before the 500-visible-task response ceiling. A revoked or
 above-clearance prefix therefore cannot make a later readable assigned task
-disappear. Pre-app-v23 callers retain the historical one-query behavior.
+disappear. The order is `created_at DESC` with a `memory_id` tiebreaker, so an
+offset-based caller can page the feed without skipping or repeating a task whose
+timestamp ties with another. Pre-app-v23 callers retain the historical
+one-query behavior.
 Current-generation Admins may use this ordinary-agent surface only from
 localhost. Root and historical Root credentials are never task assignees;
 remote or stale Admin credentials are denied. A Manager's group Modify
@@ -1526,6 +1532,8 @@ dashboard-agent auth (`web/federation_join.go:71-102`, `1021-1037`).
 | `PUT /v1/dashboard/federation/connections/{chain_id}/permissions` | Full replacement body: `{"permissions":[{"domain":"tii.work","read":true,"copy":false}]}`. Omitted domains are revoked; `[]` is explicit deny-all. Copy implies Read. Every enabled domain must already exist and be controlled by this operator. A `write:true` member is rejected with `400` because no consensus-bound federation ingress capability exists (`web/federation_permissions.go:223-258`, `279-305`). |
 | `GET /v1/dashboard/federation/connections/{chain_id}/agent-exports` | List explicitly exported local agents for this pairwise federation. Each row is bound to the active peer operator, CA pin, policy epoch, CAS revision, classification ceiling, and optional owned-domain exclusions. Manual domain-only shares never create an exported identity. |
 | `PUT /v1/dashboard/federation/connections/{chain_id}/agent-exports` | Operator-only CAS mutation of one exact active ordinary local agent using `agent_id`, `state` (`active` or `paused`), `max_classification`, `domain_exclusions`, and `expected_revision`. Active export makes the agent's current owned domain tree readable remotely and exposes its messaging identity; pause removes both derived lanes immediately. Revoked rows are internal generation-retirement state and are not accepted from this dashboard route. |
+| `GET /v1/dashboard/federation/connections/{chain_id}/agent-exposure` | Read this connection's messaging-discovery policy: which of this node's agents the peer may find by listing or by exact-name/id lookup. Returns `{mode, agent_ids, revision, configured}`; an unconfigured connection reports `mode: "all"` with `configured: false`, which is the shipped default. Discovery only: it grants no memory Read and authorizes no delivery. |
+| `PUT /v1/dashboard/federation/connections/{chain_id}/agent-exposure` | Operator-only CAS replacement of that policy using `mode` (`all`, `selected`, or `none`), a complete `agent_ids` allow list, and `expected_revision`. `selected` requires at least one agent and every listed agent must be a currently eligible ordinary local agent; `all` and `none` carry no list. A stale revision, a mismatched agreement generation, or a retired generation returns 409 and never merges rosters. |
 | `GET /v1/dashboard/federation/connections/{chain_id}/reader-restrictions` | List this SAGE's local per-agent exceptions to default federation Read. Absent/revoked means allow; rows are exact-binding, revisioned, and never positive cross-node grants. |
 | `PUT /v1/dashboard/federation/connections/{chain_id}/reader-restrictions` | Operator-only CAS mutation for one active ordinary local reader using `agent_id`, `state` (`active` or `revoked`), `deny_all`, `denied_domains`, and `expected_revision`. Domain denies use symmetric subtree protection so a broad parent query cannot return a denied child. |
 | `GET /v1/dashboard/federation/connections/{chain_id}/sync` | Returns `publish_domains`, `subscribe_domains`, `remote_publish_domains`, `remote_subscribe_domains`, and revision state. |
@@ -2195,6 +2203,147 @@ they do not promise a dedicated high-level visual treatment for every event.
 Route-local message wake, MCP, and wizard SSE protocols are intentionally
 outside this registry.
 
+### Auxiliary workflow journal (current source)
+
+`GET /v1/workflows/{uuid}` and `PUT /v1/workflows/{uuid}` require an exact,
+fresh nonce-bound ordinary-agent signature, the post-v23 pipeline-agent boundary,
+and concrete SQLite storage with an expected active vault. Actor identity comes
+only from authentication. UUIDs must be canonical, lowercase, and nonzero.
+
+PUT requires the three fields shown below; it additionally accepts one optional
+`guard` object, described below. Existing three-field requests are unchanged:
+```json
+{"kind":"mesh_outbound","expected_revision":0,"payload":{"example":"untrusted auxiliary state"}}
+```
+Kinds: `mesh_outbound`, `mesh_inbound`, `public_proposal`,
+`conversation_control`, `conversation_session`. Payload is strict JSON
+at most 16384 bytes; duplicate/unknown outer fields and duplicate nested payload
+keys are rejected. Revisions are exact JSON integers, not booleans, strings,
+nulls, or floats. Zero creates; updates require exact current revision. The
+maximum resulting revision is `9007199254740991`, so that value cannot itself
+be used as `expected_revision`. Create replay is allowed only at revision 1
+with byte-identical kind/payload; ambiguous updates require GET reconciliation.
+
+Optional conversation revision guard:
+```json
+{"kind":"conversation_session","expected_revision":0,"payload":{"example":"untrusted auxiliary state"},"guard":{"record_id":"9726bde5-5f3d-49f0-b420-33a16875b59c","expected_revision":1}}
+```
+Omission means no guard; explicitly supplied `null` is invalid. The guard must
+be an object with exactly `record_id` and `expected_revision`; duplicate keys
+(including escaped aliases), unknown fields, and missing fields are rejected.
+Its UUID must be canonical lowercase/nonzero, distinct from the target UUID.
+Its revision is a canonical decimal JSON integer from 1 through
+`9007199254740991` inclusive; booleans, null, quoted integers, fractions,
+exponent notation, and negative zero are not accepted. The target revision
+retains its existing stricter upper bound because a successful write increments it.
+
+Guards are permitted only for `conversation_session` targets. The source is
+looked up only under the authenticated actor and must decrypt/bind as
+`conversation_control` at the exact requested revision. The guard check and
+target CAS share one vault-protected SQL transaction; the control record is
+not modified. Guard checks also apply to revision-1 create replays. Missing,
+stale, other-actor-only, or wrong-kind control records produce 409 with no
+target mutation; corrupted controls produce 503, never false absence. Invalid
+guard shape/UUID/revision, self-guards, and guards on other target kinds produce
+400. Locked or encryption-disabled storage produces 503. A guard checks a
+revision, **not the meaning of consent fields or permission to submit memory**;
+auxiliary payloads remain untrusted. This adds no batch write, suppression,
+publication, canonical-proposal idempotency, or automatic retry operation.
+
+The request-body bound remains 16896 bytes (16384 payload bytes plus 512 bytes
+of envelope allowance), including any guard. SDKs must sign the full exact PUT
+body including the guard, omit the field for unguarded requests, and preserve
+the existing seven-field response shape. Do not send an actor ID in either
+object. Conflicts and uncertain outcomes require explicit reconciliation;
+GET of a target alone does not grant fresh dispatch authority after opt-out.
+
+GET and PUT return HTTP 200 with exactly `schema="sage.workflow-journal.v1"`,
+`agent_id`, `record_id`, `revision`, `kind`, `payload`, and
+`trust="untrusted_auxiliary"`. There is no delete operation or send side effect.
+
+`GET /v1/workflows` discovers only the caller's encrypted records, ordered by
+UUID. Optional query fields are `after` (exclusive canonical UUID; empty/omitted
+starts the scan) and `limit` (canonical integer 1–50, default 20). Duplicate or
+unknown query fields, actor/kind filters, and GET bodies are rejected. Response:
+```json
+{"schema":"sage.workflow-journal.v1","items":[],"next_after":null,"has_more":false}
+```
+Items use the seven-field record shape. With `has_more=true`, `next_after` is
+the last returned UUID. Corruption fails the page rather than producing partial
+or false-empty results. Separate pages are not a consistent snapshot; concurrent
+inserts before the cursor require a new scan.
+
+Responses are `Cache-Control: no-store`. Invalid requests are 400, genuinely
+absent caller-owned records 404, CAS/kind conflicts 409, size violations 413,
+actor/node quota exhaustion 429, and locked/corrupt/unsupported storage 503.
+The store seals actor/UUID/revision/kind/payload using the existing SAGE vault;
+this is not canonical memory, verified foreign provenance, public approval,
+history migration, or an E2E guarantee. No new key or activation is provided.
+Sources: `api/rest/workflow_journal_handler.go`,
+`internal/store/workflow_journal.go`, and routes in `api/rest/server.go`.
+
+### Private original JPEG objects (current source, disabled by default)
+
+`PUT /v1/private-media/{uuid}` and `GET /v1/private-media/{uuid}` require an
+exact fresh nonce-bound ordinary-agent signature and the post-v23 active local
+agent boundary. Root and pending agents cannot use this surface. Actor identity
+comes only from authentication; UUIDs must be canonical, lowercase, and nonzero.
+Query parameters and encoded-path aliases are rejected.
+
+PUT signs the **original raw JPEG request bytes**, not JSON or base64. Require
+exactly one `Content-Type: image/jpeg` and no `Content-Encoding`. The maximum
+body is 2097152 bytes; only PUT on this exact canonical route receives the
+2 MiB authenticated-body allowance. Other authenticated routes retain 1 MiB.
+JPEG validation checks bounded headers (8-bit baseline/progressive, 1 or 3
+components, at most 1920 by 1080), not raster decoding. Original bytes, including
+embedded metadata, are preserved. PUT is create-only (implicit expected revision
+zero); identical-byte replay returns the same metadata, while replacement of
+the caller's existing object with different bytes returns 409.
+
+PUT returns HTTP 200 with exactly six fields:
+```json
+{"schema":"sage.private-media.v1","agent_id":"<lowercase hex public key>","object_id":"<canonical UUID>","revision":1,"length":1234,"digest":"<lowercase SHA-256 of original JPEG>"}
+```
+After successful exact authentication, UUID validation, and backend binding,
+responses carry `X-SAGE-Private-Media-Schema: sage.private-media.v1`, including
+actual missing-object 404. An unknown-router 404 lacks this marker; it is not
+evidence that a private object is absent. Unconfigured backend responses also
+lack the marker.
+
+GET requires an empty body and returns HTTP 200 raw `image/jpeg`, with the
+original byte length in `Content-Length`, caller actor in `X-SAGE-Agent-ID`,
+requested UUID in `X-SAGE-Media-ID`, and lowercase original-byte SHA-256 in
+`X-SAGE-Media-SHA256`. It verifies authenticated row binding,
+length, digest, and JPEG headers before exposing bytes. Another actor's object
+is not visible. Every private-media response, including authentication errors,
+has `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
+
+Invalid UUID/JPEG/query/body is 400; authentication/authority failures are
+401/403; genuinely missing caller-owned objects are 404; conflicting bytes 409;
+oversize 413; unsupported content type/encoding 415; actor/node quota exhaustion
+429. Unconfigured, disabled, locked, corrupt, or unavailable storage and uncertain
+free-space admission return generic 503, never a fabricated 404. Following an
+ambiguous PUT failure, reconcile with GET or retry identical bytes under the same
+UUID with a fresh signature/nonce; do not generate a replacement object ID.
+
+`sage-gui` startup calls `Server.SetPrivateMediaStore` with an explicitly
+configured `store.NewPrivateMediaStore` only when the operator's `private_media`
+configuration enables it; otherwise the injected backend is nil. It uses the
+existing SQLite store, explicit positive actor/node ciphertext-byte and object
+quotas, a positive free-space reserve, and a native Linux/Darwin filesystem probe.
+Enabled provisioning on unsupported platforms fails closed. See
+`docs/PRIVATE_MEDIA_PROVISIONING.md` for the exact configuration and probe limits.
+No HTTP configuration or autonomous activation exists; nil or
+disabled injection fails closed. The probe runs outside vault/database locks;
+its free-space observation is not a filesystem reservation. Bytes are sealed by
+the existing SAGE vault before SQL persistence, with vault-write admission held
+through commit. This auxiliary local storage is not canonical memory, foreign
+provenance, E2E encryption, automatic history migration, or secure deletion.
+There is no list/delete API, new key, key export, or plaintext file staging.
+
+Sources: `api/rest/private_media_handler.go`, `api/rest/middleware/auth.go`,
+`internal/store/private_media.go`, and routes in `api/rest/server.go`.
+
 ### Canonical local Messages service (v11.17)
 
 The `/v1/messages` operations are one service over the existing
@@ -2204,6 +2353,7 @@ principal.
 
 | Route | Contract |
 |---|---|
+| `GET /v1/messages/storage` | Exact signed active ordinary agent; no-store, payload-free storage observation. See the strict response and security boundary below. |
 | `POST /v1/messages` | Exact-local-agent send. Requires `to_agent`, `payload`, and a 1–256-byte caller-scoped `idempotency_key`; optional `intent` and `ttl_minutes` 0–1440. Omitted/0 is durable until handled; 1–1440 requests explicit expiry. Exact retry returns the original `message_id`; same key/different request is HTTP 409. |
 | `GET /v1/messages/wake` | Exact-caller payload-free catch-up/SSE. Requires a 1–128-byte `consumer_id`; accepts `after_seq` or matching `Last-Event-ID`. Events use `id:<seq>` and data exactly `{version,seq,pending}`, where `pending` means unfinished canonical work (`pending` or `claimed`). If unfinished work remains at the supplied cursor, reconnect immediately replays that same sequence as state catch-up. One exact agent has one active consumer lease; same-consumer reconnect supersedes its stale stream, while a different live consumer receives HTTP 409. |
 | `GET /v1/messages/wake-state` | Exact-caller lease-free payload-free snapshot returning exactly `{version,seq,pending}`. It reads the same durable unfinished-work state as the wake stream without acquiring, replacing, or releasing the live consumer lease; intended for short-lived host hooks that compare a monotonic cursor. |
@@ -2218,6 +2368,47 @@ principal.
 | `PUT /v1/messages/read-batch` | One fresh exact-recipient request acknowledges 1–20 already-fetched exact message IDs. Every item is authorized independently and returns `confirmed` or a generic per-item failure; one failure never rolls back independent successes. Exact replay is idempotent. |
 | `GET /v1/messages/{message_id}/status` | Exact sender only, payload-free metadata projection. Returns independent transport/read/workflow state and never decrypts content/proofs. |
 | `GET /v1/messages/replies/{reply_event_id}/status` | Exact federated replier only. Returns payload-free outbound result-event transport state. It is not another inbox request and exposes no original-message workflow/read status or result content. |
+
+#### Storage observation and encrypted send admission (current source)
+
+`GET /v1/messages/storage` returns exactly:
+
+```json
+{
+  "schema": "sage.message-storage.v1",
+  "instance_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "agent_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "encryption_expected": true,
+  "vault_active": true,
+  "vault_generation": "1",
+  "stable": true,
+  "canonical_send_idempotency": true,
+  "encrypted_send_admission": true
+}
+```
+
+IDs are lowercase 64-hex strings; generation is a canonical uint64 decimal
+string. All flags are booleans. `agent_id` is the authenticated caller;
+`instance_id` is randomly bound to this server/store instance, not a chain ID or
+durable identity. The route requires exact signed admission, emits
+`Cache-Control: no-store`, and returns 503 when the supported store/protocol
+observation is unavailable. Missing routes/fields are not positive evidence.
+The operator must separately authenticate and pin the endpoint to its chain.
+
+`POST /v1/messages` additionally accepts optional strict boolean
+`require_encrypted_storage` (omitted/false preserves existing behavior). True
+requires supported SQLite encrypted admission: encryption must be expected
+and the vault active while the vault-publication read lock spans canonical
+send/idempotency handling. Unsupported or unavailable encrypted admission is
+503; invalid/non-boolean/duplicate flag values are 400. A prior metadata read
+alone does not close the race; clients requiring this property must check the
+advertised capability and send the flag. Never assume an older server enforces it.
+
+These are source contracts, not deployment/activation evidence, an audit or
+migration of historical plaintext messages, or a recipient-only E2E guarantee.
+Sources: `api/rest/message_storage_status.go:handleMessageStorageStatus`,
+`api/rest/messages_handler.go:handleMessageSend`, and
+`internal/store/message_storage_status.go:SendEncryptedLocalMessage`.
 
 Deprecated exact-local `GET /v1/pipe/inbox` and explicit
 `PUT /v1/pipe/{pipe_id}/claim` use the same session-aware claim transaction as
@@ -2351,6 +2542,14 @@ Send a pipeline message to another agent or provider.
 | `ttl_minutes` | int | no | 0–1440. With `idempotency_key`, omitted/0 is durable until handled; without a key, the legacy route defaults omitted/0 to 1440 minutes. Values 1–1440 request explicit expiry. |
 | `idempotency_key` | string | no | Caller-scoped 1–256-byte token. Exact retry returns the original row; reusing the key for different content is HTTP 409. Omit only when replay protection is not required. |
 
+Python sync/async `pipe_send(..., idempotency_key=...)` exposes this existing
+field without automatic retries; omitted/`None` leaves the legacy body unchanged.
+For federated exact-agent sends, `handlePipeSend` uses
+`SQLiteStore.SendFederatedMessage` to atomically persist the original message,
+transport event, and sender-scoped idempotency binding. This is not a radio
+endpoint or proof of remote delivery; provider-addressed routing does not gain
+the canonical exact-agent idempotency guarantee.
+
 For a local send, the target must be registered here. For a federated send,
 call `/v1/pipe/resolve` first and sign its exact `source_chain_id`, `to_agent`,
 and `destination_chain_id`. Friendly `#node/agent` aliases are rejected by the send
@@ -2381,7 +2580,7 @@ address resolved from a bounded legacy-status offline cache can be accepted
 locally while the peer is down. Delivery waits for that peer to return and pass
 the fresh live authorization preflight above.
 
-**Size caps → HTTP 413.** `payload` is capped at 256 KiB and `intent` at 8 KiB (`MaxPipeContentBytes`/`MaxPipeIntentBytes`, `internal/store/store.go:771-777`). The REST handler fast-fails an over-cap request with **413** before the store write; the store enforces the same caps at the `InsertPipeline` chokepoint (`internal/store/sqlite.go:6531` declaration, `:6533` payload, `:6536` intent) as defense in depth, mapping `ErrPipePayloadTooLarge`/`ErrPipeIntentTooLarge` (`store.go:792-794`) to 413.
+**Size caps → HTTP 413.** `payload` is capped at 256 KiB and `intent` at 8 KiB (`MaxPipeContentBytes`/`MaxPipeIntentBytes`, `internal/store/store.go:771-777`). The REST handler fast-fails an over-cap request with **413** before the store write; the store enforces the same caps at the `InsertPipeline` chokepoint (`internal/store/sqlite.go:6555` declaration, `:6557` payload, `:6560` intent) as defense in depth, mapping `ErrPipePayloadTooLarge`/`ErrPipeIntentTooLarge` (`store.go:792-794`) to 413.
 
 **Open-pipe quota → HTTP 429 + `Retry-After`.** A single verified agent identity may hold at most 256 non-terminal (pending or claimed) pipes open at once, and a node caps 10000 across all requesters (`MaxOpenPipesPerAgent`/`MaxOpenPipesGlobal`). An index-backed COUNT and its INSERT run under the same write critical section, so parallel sends cannot race past either cap. Over-quota inserts are rejected as **429 with `Retry-After`** (`ErrPipeQuotaPerAgent`/`ErrPipeQuotaGlobal`), keyed on the Ed25519-verified `from_agent`, not the spoofable rate-limit header. This mirrors the mempool-full recipe (see `GET /v1/chain/backpressure` below): treat it as backpressure and retry after the hinted interval, not as a per-agent rate-limit breach.
 
@@ -2618,7 +2817,7 @@ the result over the original agreement-bound return route
 | `source_chain_id` | string | for foreign work | Exact local reply-source chain returned as `reply_source_chain_id` by the pipe status preflight; prevents another node relabeling the signed result |
 | `claimant_session_id` | string | for foreign work; recommended for provider-addressed compatibility work | Opaque 1–128-byte session currently holding the claim. A provider-addressed row claimed by an older sessionless caller is fenced as `legacy`, and an omitted result session selects only that exact fence; it cannot bypass a named sibling session. |
 
-`result` is capped at 256 KiB (`MaxPipeContentBytes`, `store.go:775`); an over-cap submission is rejected **HTTP 413**, enforced both at the handler and at the `CompletePipeline` store chokepoint (`sqlite.go:6765`, mapping `ErrPipeResultTooLarge` at `:6767-6768`).
+`result` is capped at 256 KiB (`MaxPipeContentBytes`, `store.go:775`); an over-cap submission is rejected **HTTP 413**, enforced both at the handler and at the `CompletePipeline` store chokepoint (`sqlite.go:6821`, mapping `ErrPipeResultTooLarge` at `:6823-6824`).
 
 **Response** (HTTP 200):
 `{"status":"completed","journal_id":"<memory_id or empty>","journaled":true|false}`.

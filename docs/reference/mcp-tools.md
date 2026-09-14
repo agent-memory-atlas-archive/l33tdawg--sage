@@ -1,4 +1,4 @@
-Reconciled against internal/mcp for SAGE v11.19.22.
+Reconciled against internal/mcp for SAGE v11.20.0.
 
 # SAGE MCP Tools Reference
 
@@ -806,7 +806,7 @@ open. Their consensus-backed content is immutable after creation.
 |-------------|----------|----------|-------------|
 | `content`   | string   | no*      | Task description. Required when creating and rejected when `memory_id` is present. Stored with exactly one `[TASK] ` prefix, including when the input is already marked. |
 | `domain`    | string   | no       | Exact domain tag. Omit to use the approved app-v23 owned home domain (legacy nodes use `general`). An explicit value is never remapped. |
-| `memory_id` | string   | no*      | Existing task memory ID. Required when updating. |
+| `memory_id` | string   | no*      | Existing task memory ID. Required when updating. A unique prefix of at least 8 characters is resolved against this agent's open tasks, so a predecessor named only by prefix in an older entry ("superseded by `958760b4`") can be closed directly. An ambiguous prefix returns an error naming the matches and no mutation is attempted; the result carries `resolved_from_prefix` when resolution happened. |
 | `status`    | string   | no       | `planned`, `in_progress`, `done`, `dropped`. New tasks default to `planned`. Existing tasks require an explicit mutable status; agents cannot re-plan them. |
 | `link_to`   | string[] | no       | Memory IDs to link this task to via `related` link type. May be used with `memory_id` without changing task status. |
 | `idempotency_key` | string | no | Permanent creation identity. When omitted, SAGE derives a deterministic key from the signed caller, resolved domain, and canonical `[TASK] ` content. Repeating that semantic task returns the original task at its current status, including `done` or `dropped`. Supply a new explicit key only when intentionally creating another task with identical content and domain. |
@@ -870,11 +870,21 @@ Unassigned tasks remain visible only to the local CEREBRUM operator for triage.
 | Name     | Type   | Required | Description |
 |----------|--------|----------|-------------|
 | `domain` | string | no       | Filter by domain. Omit for all domains. |
+| `limit`  | int    | no       | Tasks per page. Default 25, maximum 100. |
+| `offset` | int    | no       | Zero-based offset into the same stable order (`created_at DESC`, then `memory_id`). Pass the previous page's `next_offset`. |
 
 **Returns:**
-- `tasks_by_domain`: map of domain → array of `{memory_id, content, task_status, confidence, created_at, assignee, assigned_to_you, task_picked_up_by, task_picked_up_at}`. Every row has `assignee` equal to the signed agent ID and `assigned_to_you: true`.
-- `total_open`: total open task count.
-- `message`: human-readable summary.
+- `tasks_by_domain`: map of domain → array of `{memory_id, content, task_status, confidence, created_at, assignee, assigned_to_you, task_picked_up_by, task_picked_up_at}` for THIS page. Every row has `assignee` equal to the signed agent ID and `assigned_to_you: true`.
+- `total_open`: how many open tasks this agent can enumerate in total — not the page size.
+- `returned`: rows in this page. `limit` and `offset` echo the request.
+- `has_more` and `next_offset`: set while more pages remain. **This listing is paged: one call is never the whole board.** Page with `offset` until `has_more` is false before claiming you have seen every task.
+- `scan_capped`: present and true when the node stopped scanning at its own bound, so `total_open` may undercount the true board. Narrow by `domain` or provider to see the remainder. It is never set for a board inside the bound.
+- `message`: human-readable summary, including the next `offset` when a page remains.
+
+The order is stable (`created_at DESC`, then `memory_id`), so paging cannot skip
+or repeat a task between calls. Earlier versions returned the whole board in one
+payload with no paging fields; a client with a large board could then show a
+partial list that looked complete.
 
 Assignment does not bypass live authorization. Every returned task must also
 pass the caller's current domain/group/grant scope and classification

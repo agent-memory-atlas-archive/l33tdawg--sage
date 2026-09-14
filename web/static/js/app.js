@@ -9,7 +9,7 @@ deprecateUnreadable, getRecoveryKey, confirmRecoveryKeyBackup, recoverOrphansPre
 joinHostInterfaces, enableNetworkMode, joinHostStart, joinHostStatus, joinHostApprove, joinHostAbort,
 joinGuestStart, joinGuestStatus, joinGuestCancel, joinGuestRestart,
 chatGPTTunnelStatus, chatGPTTunnelSetup, chatGPTTunnelStop,
-fedConnections, fedPause, fedRevoke, fedPeerStatus, fedGetNetworkName, fedSetNetworkName, fedLanEndpoint, fedReadiness, fedSettingGet, fedSettingSet, fedShareableDomains, fedPermissionsGet, fedPermissionsSet, fedAgentExportsGet, fedAgentExportSet, fedReaderRestrictionsGet, fedReaderRestrictionSet, fedPipeContactsGet, fedPipeContactSet, fedSyncGet, fedSyncSet, fedSyncStatus, fedGroups, fedGroupsRefresh, fedGroupCreate, fedGroupDomainAdd, fedGroupDomainRemove, fedGroupSelfRole, fedGroupRename, fedGroupMemberInvite, fedGroupMemberRemove, fedGroupDissolve, fedJoinRoutes, fedHostCreate, fedHostScanReturn, fedHostStatus, fedHostApprove, fedHostAbort, fedGuestScan, fedGuestRequest, fedGuestStatus, fedGuestAbort, fedGuestConfirm } from './api.js';
+fedConnections, fedPause, fedRevoke, fedPeerStatus, fedGetNetworkName, fedSetNetworkName, fedLanEndpoint, fedReadiness, fedSettingGet, fedSettingSet, fedShareableDomains, fedPermissionsGet, fedPermissionsSet, fedAgentExportsGet, fedAgentExportSet, fedAgentExposureGet, fedAgentExposureSet, fedReaderRestrictionsGet, fedReaderRestrictionSet, fedPipeContactsGet, fedPipeContactSet, fedSyncGet, fedSyncSet, fedSyncStatus, fedGroups, fedGroupsRefresh, fedGroupCreate, fedGroupDomainAdd, fedGroupDomainRemove, fedGroupSelfRole, fedGroupRename, fedGroupMemberInvite, fedGroupMemberRemove, fedGroupDissolve, fedJoinRoutes, fedHostCreate, fedHostScanReturn, fedHostStatus, fedHostApprove, fedHostAbort, fedGuestScan, fedGuestRequest, fedGuestStatus, fedGuestAbort, fedGuestConfirm } from './api.js';
 
 import { mountMriBrain } from './mri-brain.js';
 import { restartBaselineBootID, requestedRestartIsReady } from './restart-proof.js';
@@ -78,7 +78,7 @@ const html = window.html;
 // `go build` dev binary where main.version is "dev"). Keep in sync with the
 // release being built; stamped release builds override this via the live
 // /health read below.
-const SAGE_VERSION = 'v11.19.22';
+const SAGE_VERSION = 'v11.20.0';
 
 // Promise-based, themed replacement for the browser's blocking confirmation API.
 // Requests are immutable and serialized so independent actions cannot replace
@@ -16632,6 +16632,23 @@ function normalizeFedPipeContactGrant(value) {
     };
 }
 
+// Agent discovery (messaging) exposure for one connection. An unconfigured
+// connection reports mode "all", which is the shipped default, so the UI can
+// render the true posture instead of assuming the operator narrowed it.
+function normalizeFedAgentExposure(value) {
+    const exposure = value && typeof value === 'object' ? value : {};
+    const mode = ['all', 'selected', 'none'].includes(exposure.mode) ? exposure.mode : 'all';
+    const agentIDs = Array.isArray(exposure.agent_ids)
+        ? exposure.agent_ids.map(id => String(id || '').trim().toLowerCase()).filter(Boolean)
+        : [];
+    return {
+        mode,
+        agent_ids: agentIDs,
+        revision: Number(exposure.revision || 0),
+        configured: exposure.configured === true,
+    };
+}
+
 // The ordinary endpoint is an authoritative but bounded sample. Exact agent
 // lookups may extend it, but only for the explicitly requested identities.
 // Rebuilding from the latest base on every poll makes a revoked or ineligible
@@ -16695,6 +16712,11 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 	const [localAgentDirectoryErr, setLocalAgentDirectoryErr] = useState('');
 	const [selectedLocalAgentID, setSelectedLocalAgentID] = useState('');
 	const [agentExports, setAgentExports] = useState({});
+	const [agentExposure, setAgentExposure] = useState(null);
+	const [exposureMode, setExposureMode] = useState('all');
+	const [exposureSelection, setExposureSelection] = useState(() => new Set());
+	const [exposureBusy, setExposureBusy] = useState(false);
+	const [exposureErr, setExposureErr] = useState('');
 	const [readerRestrictions, setReaderRestrictions] = useState({});
 	const [selectedReaderID, setSelectedReaderID] = useState('');
 	const [readerDenyAll, setReaderDenyAll] = useState(false);
@@ -16728,7 +16750,7 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
         setSyncErr('');
         setSyncSaveErr('');
         const load = async () => {
-			const [catalogResult, permissionsResult, syncResult, syncStatusResult, pipeContactsResult, agentsResult, exportsResult, restrictionsResult] = await Promise.allSettled([
+			const [catalogResult, permissionsResult, syncResult, syncStatusResult, pipeContactsResult, agentsResult, exportsResult, restrictionsResult, exposureResult] = await Promise.allSettled([
                 fedShareableDomains(),
                 fedPermissionsGet(chain, false),
                 fedSyncGet(chain),
@@ -16737,6 +16759,7 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 				fetchAgents(),
 				fedAgentExportsGet(chain),
 				fedReaderRestrictionsGet(chain),
+				fedAgentExposureGet(chain),
             ]);
             if (!live) return;
             const errors = [];
@@ -16808,6 +16831,12 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 				}
 				setReaderRestrictions(next);
 			} else errors.push('reader restrictions: unavailable');
+			if (exposureResult.status === 'fulfilled') {
+				const next = normalizeFedAgentExposure(exposureResult.value && exposureResult.value.exposure);
+				setAgentExposure(next);
+				setExposureMode(next.mode);
+				setExposureSelection(next.mode === 'selected' ? new Set(next.agent_ids) : new Set());
+			} else errors.push('agent discovery policy: unavailable');
             setErr(errors.length ? `Couldn't load ${errors.join('; ')}` : '');
         };
         load();
@@ -17134,6 +17163,61 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 		}
 	};
 
+	// Agent-discovery narrowing. The shipped default is "all", so the first
+	// click on an individual agent has to mean "only this one" rather than
+	// "add to an empty list": that is what makes the control safe to use on a
+	// connection nobody has configured yet. Later clicks toggle membership, and
+	// unchecking the last agent is the explicit deny-all mode instead of an
+	// invalid empty allow list.
+	const toggleExposureAgent = agentID => {
+		if (exposureBusy) return;
+		const id = String(agentID || '').trim().toLowerCase();
+		if (!id) return;
+		setExposureErr('');
+		const next = exposureMode === 'selected' ? new Set(exposureSelection) : new Set();
+		if (next.has(id)) next.delete(id); else next.add(id);
+		setExposureSelection(next);
+		setExposureMode(next.size === 0 ? 'none' : 'selected');
+	};
+
+	const chooseExposureMode = mode => {
+		if (exposureBusy) return;
+		setExposureErr('');
+		if (mode === 'selected') {
+			setExposureMode('selected');
+			return;
+		}
+		setExposureSelection(new Set());
+		setExposureMode(mode === 'none' ? 'none' : 'all');
+	};
+
+	const saveAgentExposure = async () => {
+		if (exposureBusy || agentExposure === null) return;
+		const mode = exposureMode === 'selected' && exposureSelection.size === 0 ? 'none' : exposureMode;
+		const agentIDs = mode === 'selected' ? Array.from(exposureSelection).slice().sort() : [];
+		setExposureBusy(true); setExposureErr('');
+		try {
+			const response = await fedAgentExposureSet(chain, {
+				mode,
+				agent_ids: agentIDs,
+				expected_revision: Number(agentExposure.revision || 0),
+			});
+			const next = normalizeFedAgentExposure(response && response.exposure);
+			setAgentExposure(next);
+			setExposureMode(next.mode);
+			setExposureSelection(next.mode === 'selected' ? new Set(next.agent_ids) : new Set());
+			showToast(mode === 'all'
+				? `${peerName} can discover every eligible agent on this SAGE`
+				: (mode === 'none'
+					? `${peerName} can no longer discover any agent here`
+					: `${peerName} can discover ${agentIDs.length} chosen agent${agentIDs.length === 1 ? '' : 's'}`), 'success');
+		} catch (e) {
+			setExposureErr(String(e.message || e));
+		} finally {
+			setExposureBusy(false);
+		}
+	};
+
 	const removeLocalAgentExport = async contact => {
 		const currentExport = contact && agentExports[contact.agent_id];
 		if (!currentExport || currentExport.state !== 'active' || busy || pipeContactMutationRef.current) return;
@@ -17399,6 +17483,20 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 	const localAgentOptions = (Array.isArray(localAgentDirectory) ? localAgentDirectory : [])
 		.filter(agent => agent && agent.agent_id && agent.status === 'active' && !agent.removed_at && !shownLocalAgentIDs.has(agent.agent_id))
 		.sort((a, b) => fedFriendlyLocalAgentLabel(a).localeCompare(fedFriendlyLocalAgentLabel(b)));
+	const exposureCandidates = (Array.isArray(localAgentDirectory) ? localAgentDirectory : [])
+		.filter(agent => agent && agent.agent_id && agent.status === 'active' && !agent.removed_at)
+		.map(agent => ({ ...agent, agent_id: String(agent.agent_id).toLowerCase() }))
+		.sort((a, b) => fedFriendlyLocalAgentLabel(a).localeCompare(fedFriendlyLocalAgentLabel(b)));
+	const savedExposureMode = agentExposure ? agentExposure.mode : 'all';
+	const savedExposureSelection = agentExposure && agentExposure.mode === 'selected'
+		? agentExposure.agent_ids.slice().sort()
+		: [];
+	const exposureSelectionKey = (exposureMode === 'selected' ? Array.from(exposureSelection) : []).slice().sort().join(',');
+	const exposureDirty = agentExposure !== null &&
+		(exposureMode !== savedExposureMode || exposureSelectionKey !== savedExposureSelection.join(','));
+	const exposureVisibleCount = exposureMode === 'all'
+		? exposureCandidates.length
+		: (exposureMode === 'selected' ? exposureSelection.size : 0);
 	const showOutgoing = roleKnown;
     const outboxCounts = syncStatus && syncStatus.outbox_counts && typeof syncStatus.outbox_counts === 'object'
         ? syncStatus.outbox_counts
@@ -17495,6 +17593,60 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 						onClick=${saveFederationReaderRestriction}>${readerRestrictionBusy ? 'Saving…' : 'Save reader policy'}</button>
 				</div>
 			</div>`}
+		</section>`}
+
+		${roleKnown && html`<section class="fed-perm-section fed-agent-section" aria-labelledby=${`fed-discovery-heading-${chain}`}>
+			<div class="fed-perm-section-head">
+				<div>
+					<h4 id=${`fed-discovery-heading-${chain}`}>Agent discovery on ${peerName}</h4>
+					<p>Who ${peerName} can find when it lists or searches for an agent on this SAGE. This is listing and search only: it never grants memory access, and a discovered agent still has to accept before anything is delivered. ${exposureMode === 'all'
+						? `Every eligible agent here is discoverable (${exposureCandidates.length}).`
+						: `${exposureVisibleCount} of ${exposureCandidates.length} eligible agents are discoverable.`}</p>
+				</div>
+			</div>
+			<div class="fed-exposure-modes" role="radiogroup" aria-label=${`Agent discovery mode for ${peerName}`}>
+				<label class=${`fed-exposure-mode ${exposureMode === 'all' ? 'active' : ''}`}>
+					<input type="radio" name=${`fed-exposure-${chain}`} checked=${exposureMode === 'all'}
+						disabled=${exposureBusy || agentExposure === null}
+						onChange=${() => chooseExposureMode('all')} />
+					<span><strong>All agents</strong><small>Default. Every eligible agent is listed and searchable.</small></span>
+				</label>
+				<label class=${`fed-exposure-mode ${exposureMode === 'selected' ? 'active' : ''}`}>
+					<input type="radio" name=${`fed-exposure-${chain}`} checked=${exposureMode === 'selected'}
+						disabled=${exposureBusy || agentExposure === null}
+						onChange=${() => chooseExposureMode('selected')} />
+					<span><strong>Only the ones I pick</strong><small>Unticked agents disappear from ${peerName}’s listing and search.</small></span>
+				</label>
+				<label class=${`fed-exposure-mode ${exposureMode === 'none' ? 'active' : ''}`}>
+					<input type="radio" name=${`fed-exposure-${chain}`} checked=${exposureMode === 'none'}
+						disabled=${exposureBusy || agentExposure === null}
+						onChange=${() => chooseExposureMode('none')} />
+					<span><strong>None</strong><small>${peerName} can find no agent here at all.</small></span>
+				</label>
+			</div>
+			${exposureCandidates.length === 0 && html`<div class="fed-agent-empty muted">No active local agents to choose from.</div>`}
+			${exposureCandidates.length > 0 && html`<div class="fed-exposure-list" role="group" aria-label=${`Agents ${peerName} may discover`}>
+				${exposureCandidates.map(agent => {
+					const checked = exposureMode === 'all' || (exposureMode === 'selected' && exposureSelection.has(agent.agent_id));
+					return html`<label class=${`fed-exposure-row ${checked ? 'on' : ''}`} key=${agent.agent_id}>
+						<input type="checkbox" checked=${checked} disabled=${exposureBusy || agentExposure === null}
+							onChange=${() => toggleExposureAgent(agent.agent_id)} />
+						<span class="fed-agent-identity">
+							<strong>${fedFriendlyLocalAgentLabel(agent).split(' · ')[0]}</strong>
+							<code>${agent.agent_id.slice(0, 12)}…</code>
+						</span>
+					</label>`;
+				})}
+				<span class="muted fed-exposure-hint">Ticking one agent switches this connection to “Only the ones I pick” with just that agent exposed; tick more to add them, or clear them all to expose nobody.</span>
+			</div>`}
+			<div class="fed-exposure-actions">
+				<button class="btn btn-primary" disabled=${exposureBusy || agentExposure === null || !exposureDirty}
+					onClick=${saveAgentExposure}>${exposureBusy ? 'Saving…' : 'Save discovery policy'}</button>
+				<span class="muted" role="status">${agentExposure === null
+					? 'Loading agent discovery…'
+					: (exposureDirty ? 'Unsaved discovery changes' : (agentExposure.configured ? 'Saved' : 'Default: all agents discoverable'))}</span>
+			</div>
+			${exposureErr && html`<div class="fed-err fed-perm-error" role="alert">${exposureErr}</div>`}
 		</section>`}
 
 		${roleKnown && html`<section class="fed-perm-section fed-agent-section">

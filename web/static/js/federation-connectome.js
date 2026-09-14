@@ -2,6 +2,64 @@ import { fedPipeContactsGet } from './api.js';
 import { filterFederationAgents } from './federation-directory.js';
 
 export const agentLabel = agent => agent.display_name || agent.registered_name || String(agent.agent_id || '').slice(0, 12);
+
+// A node's colour is derived from its chain id, never assigned and never
+// negotiated: both operators hash the same id to the same swatch, so a peer
+// looks identical on both screens and nothing has to be stored or synced. The
+// palette is picked for contrast on the dark map, and colour is always a
+// redundant cue here — the machine name and the state word are text — so the
+// map still reads correctly with any colour vision or in a screenshot.
+export const FEDERATION_NODE_PALETTE = Object.freeze([
+    '#5ee0c8', '#7fb2ff', '#ffc06a', '#c3a2ff',
+    '#ff9db0', '#9ae06a', '#64d2ff', '#ffa8e8',
+]);
+
+export function nodeColor(id) {
+    const value = String(id || '');
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < value.length; index += 1) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return FEDERATION_NODE_PALETTE[hash % FEDERATION_NODE_PALETTE.length];
+}
+
+// One node name rendered inside a 47px circle: at most two short lines, then a
+// truncated second line with an ellipsis. "SAGE" told the operator nothing —
+// every node wore the same word — while the machine name is the identity they
+// actually reason about, so the name goes in the circle and the full value
+// stays available in the title, the aria-label and the inspector.
+export function nodeLabel(name) {
+    // Break after a hyphen, dot or underscore rather than dropping it, so
+    // "STUDIO-MACMINI" wraps as "STUDIO-" / "MACMINI" instead of silently
+    // turning into two unrelated words.
+    const words = String(name || '').trim().split(/\s+/)
+        .flatMap(chunk => chunk.match(/[^\s._-]+[._-]?/g) || [])
+        .filter(Boolean);
+    if (!words.length) return { lines: ['This node'], fontSize: 17 };
+    const join = list => list.reduce((acc, word) => (!acc ? word : acc + (/[._-]$/.test(acc) ? '' : ' ') + word), '');
+    const width = 12;
+    const lines = [];
+    let current = [];
+    let consumed = 0;
+    for (const word of words) {
+        consumed += 1;
+        const candidate = [...current, word];
+        if (!current.length || join(candidate).length <= width) { current = candidate; continue; }
+        lines.push(join(current));
+        current = [word];
+        if (lines.length === 2) break;
+    }
+    if (lines.length < 2 && current.length) lines.push(join(current));
+    const rendered = lines.map(line => (line.length > width ? `${line.slice(0, width - 1)}…` : line));
+    const droppedWord = consumed < words.length;
+    if (rendered.length && (droppedWord || rendered.some(line => line.length > width))) {
+        const last = rendered[rendered.length - 1];
+        if (!last.endsWith('…')) rendered[rendered.length - 1] = `${last.slice(0, width - 1)}…`;
+    }
+    const longest = rendered.reduce((max, line) => Math.max(max, line.length), 0);
+    return { lines: rendered, fontSize: rendered.length === 1 ? (longest <= 7 ? 21 : 16) : 13 };
+}
 export function activityLabel(item) {
     if (item.state === 'failed') return item.kind === 'result' ? 'Reply failed' : 'Delivery failed';
     if (item.state === 'received') return item.kind === 'result' ? 'Reply received' : 'Received here';
@@ -180,6 +238,10 @@ export function FederationConnectome({ connections, statuses, localChain, localN
     const halfWidth = Math.max(600, ...nodes.map(n => Math.abs(n.x - 600) + 185));
     const halfHeight = Math.max(380, ...nodes.map(n => Math.abs(n.y - 380) + 225));
     const mapViewBox = `${600-halfWidth} ${380-halfHeight} ${halfWidth*2} ${halfHeight*2}`;
+    // Names are fitted once per node, not per render pass: the circle is 47px
+    // in a fixed viewBox, so the label is a property of the identity, not of the
+    // current zoom or camera.
+    const nodeLabels = new Map(nodes.map(node => [node.id, nodeLabel(node.name)]));
     const matches = new Set(nodes.flatMap(n => filterFederationAgents(n.loadedAgents, query).map(a => `${n.id}:${a.agent_id}`)));
     const selectedNode = nodes.find(n => n.id === selection?.nodeID);
     const selectedAgent = selectedNode?.agents.find(a => a.agent_id === selection?.agentID);
@@ -230,15 +292,18 @@ export function FederationConnectome({ connections, statuses, localChain, localN
             onPointerDown=${event => { if (event.target.closest('[data-entity]')) return; setMapDragging(true); drag.current = { ...point(event), camera }; event.currentTarget.setPointerCapture(event.pointerId); }}
             onPointerMove=${event => { if (!drag.current) return; const p = point(event); setCamera({ ...drag.current.camera, x: drag.current.camera.x + p.x - drag.current.x, y: drag.current.camera.y + p.y - drag.current.y }); }}
             onPointerUp=${() => { drag.current = null; setMapDragging(false); }} onPointerCancel=${() => { drag.current = null; setMapDragging(false); }}>
-            <defs><radialGradient id="fc-halo"><stop offset="0" stop-color="#42d7c4" stop-opacity=".15"/><stop offset="1" stop-color="#42d7c4" stop-opacity="0"/></radialGradient></defs>
+            <defs>${nodes.map((node, index) => html`<radialGradient id=${`fc-halo-${index}`}><stop offset="0" stop-color=${nodeColor(node.id)} stop-opacity=".15"/><stop offset="1" stop-color=${nodeColor(node.id)} stop-opacity="0"/></radialGradient>`)}</defs>
             <g transform=${`translate(${camera.x} ${camera.y}) translate(600 380) scale(${camera.zoom}) translate(-600 -380)`}>
-            ${nodes.slice(1).map(node => html`<g key=${node.id} class=${`fc-trust ${node.state === 'Reachable' ? 'is-reachable' : ''}`}>
+            ${nodes.slice(1).map(node => html`<g key=${node.id} class=${`fc-trust ${node.state === 'Reachable' ? 'is-reachable' : ''}`} style=${`--fc-node:${nodeColor(node.id)}`}>
                 <path d=${`M ${nodes[0].x} ${nodes[0].y} Q 600 ${node.y - 75} ${node.x} ${node.y}`} />
                 <path class="fc-link-hit" data-entity="connection" role="button" tabindex="0" aria-label=${`Connection to ${node.name}`} d=${`M ${nodes[0].x} ${nodes[0].y} Q 600 ${node.y - 75} ${node.x} ${node.y}`} onClick=${() => select(node)} onKeyDown=${e => keySelect(e, node)} />
             </g>`)}
             ${permittedAgents.map(a => html`<line class="fc-permitted" x1=${selectedAgent.x} y1=${selectedAgent.y} x2=${a.x} y2=${a.y} />`)}
-            ${nodes.map(node => html`<g key=${node.id} class=${`fc-cluster ${nodeVisible(node) ? '' : 'is-dim'}`}>
-                <circle cx=${node.x} cy=${node.y} r="168" fill="url(#fc-halo)"/>
+            ${nodes.map((node, index) => {
+                const label = nodeLabels.get(node.id) || nodeLabel(node.name);
+                const labelTop = label.lines.length === 1 ? node.y + 2 : node.y - 8;
+                return html`<g key=${node.id} class=${`fc-cluster ${nodeVisible(node) ? '' : 'is-dim'}`} style=${`--fc-node:${nodeColor(node.id)}`}>
+                <circle cx=${node.x} cy=${node.y} r="168" fill=${`url(#fc-halo-${index})`}/>
                 <ellipse class="fc-orbit" cx=${node.x} cy=${node.y} rx="143" ry="143"/>
                 ${node.agents.map(agent => html`<g key=${agent.agent_id} class=${`fc-agent ${access(node,agent) === 'Messaging allowed' ? '' : 'is-blocked'} ${selectedAgent?.agent_id === agent.agent_id && selectedNode?.id === node.id ? 'is-selected' : ''} ${query.trim() && !nodeMatches(node) && !matches.has(`${node.id}:${agent.agent_id}`) ? 'is-dim' : ''}`}>
                     <line x1=${node.x} y1=${node.y} x2=${agent.x} y2=${agent.y}/>
@@ -248,11 +313,15 @@ export function FederationConnectome({ connections, statuses, localChain, localN
                     </g>
                 </g>`)}
                 <g data-entity="node" class=${`fc-node ${selectedNode?.id === node.id && !selectedAgent ? 'is-selected' : ''}`} role="button" tabindex="0" aria-label=${`${node.name}. ${node.state}. ${node.loadedAgents.length} agents loaded`} onClick=${() => select(node)} onKeyDown=${e => keySelect(e,node)}>
-                    <circle cx=${node.x} cy=${node.y} r="47"/><text x=${node.x} y=${node.y - 4} text-anchor="middle">${node.local ? 'S' : 'SAGE'}</text><text class="fc-node-count" x=${node.x} y=${node.y + 18} text-anchor="middle">${node.loadedAgents.length} agents</text>
-                    <text class="fc-node-name" x=${node.x} y=${node.y + 183} text-anchor="middle">${node.name.slice(0,28)}</text><text class="fc-node-status" x=${node.x} y=${node.y + 202} text-anchor="middle">${node.state}${!node.known ? ' · directory unavailable' : ''}</text>
-                    ${node.matchingCount > node.agents.length && html`<text class="fc-node-status" x=${node.x} y=${node.y + 220} text-anchor="middle">+${node.matchingCount - node.agents.length} more · search or use List</text>`}
+                    <circle class="fc-node-ring" cx=${node.x} cy=${node.y} r="47"/>
+                    <title>${`${node.name} · ${node.state} · ${node.loadedAgents.length} agents loaded`}</title>
+                    <text class="fc-node-label" x=${node.x} y=${labelTop} text-anchor="middle" style=${`font-size:${label.fontSize}px`}>${label.lines[0]}</text>
+                    ${label.lines.length > 1 && html`<text class="fc-node-label" x=${node.x} y=${node.y + 11} text-anchor="middle" style=${`font-size:${label.fontSize}px`}>${label.lines[1]}</text>`}
+                    <text class="fc-node-count" x=${node.x} y=${node.y + (label.lines.length === 1 ? 22 : 31)} text-anchor="middle">${node.loadedAgents.length} agents</text>
+                    <text class="fc-node-status" x=${node.x} y=${node.y + 183} text-anchor="middle">${node.state}${!node.known ? ' · directory unavailable' : ''}</text>
+                    ${node.matchingCount > node.agents.length && html`<text class="fc-node-status" x=${node.x} y=${node.y + 201} text-anchor="middle">+${node.matchingCount - node.agents.length} more · search or use List</text>`}
                 </g>
-            </g>`)}
+            </g>`; })}
             ${pulses.map(item => { const endpoints = activityNodes(item); if (!endpoints) return null; return html`<g key=${item.key} class=${`fc-pulse fc-pulse-${item.state}`} aria-hidden="true"><path pathLength="1" d=${`M ${endpoints.source.x} ${endpoints.source.y} L ${endpoints.target.x} ${endpoints.target.y}`} /></g>`; })}
             </g></svg><div class="fc-map-tools"><button class="btn" aria-pressed=${motionOn && !reducedMotion} disabled=${reducedMotion} title="Decorative movement; pauses over an agent, during keyboard inspection, or while dragging. It does not indicate agent presence." onClick=${() => setMotionOn(value => !value)}>${reducedMotion ? 'Reduced motion' : motionOn ? 'Pause motion' : 'Resume motion'}</button><button class="btn" aria-label="Zoom in" onClick=${() => setCamera(c => ({ ...c, zoom: Math.min(2.5,c.zoom + .2) }))}>+</button><button class="btn" aria-label="Zoom out" onClick=${() => setCamera(c => ({ ...c, zoom: Math.max(.5,c.zoom - .2) }))}>−</button><button class="btn" onClick=${() => setCamera({ x:0,y:0,zoom:1 })}>Fit view</button></div><div class="fc-map-hint">Drag space to pan · select a dot to inspect an agent</div></div>` : html`<div class="fc-list">${nodes.filter(nodeVisible).map(node => html`<section key=${node.id}><button class="fc-list-node" onClick=${() => select(node)}>${node.name}<small>${node.state}</small></button>${filterFederationAgents(node.loadedAgents,nodeMatches(node) ? '' : query).map(agent => html`<button class="fc-list-agent" key=${agent.agent_id} onClick=${() => select(node,agent)}><strong>${agentLabel(agent)}</strong><small>${access(node,agent)}</small></button>`)}</section>`)}</div>`}
         <div class="fc-legend"><span>● Agent</span><span>─ Trusted connection</span><span>┄ Allowed messaging on selection</span><span>Pulse = message status update</span><span>Gentle drift is decorative</span></div>

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -123,6 +124,8 @@ func (h *DashboardHandler) registerFederationRoutes(r chi.Router) {
 	fr.Put("/v1/dashboard/federation/connections/{chain_id}/agent-exports", h.handleFedAgentExportsPut)
 	fr.Get("/v1/dashboard/federation/connections/{chain_id}/reader-restrictions", h.handleFedReaderRestrictionsGet)
 	fr.Put("/v1/dashboard/federation/connections/{chain_id}/reader-restrictions", h.handleFedReaderRestrictionsPut)
+	fr.Get("/v1/dashboard/federation/connections/{chain_id}/agent-exposure", h.handleFedAgentExposureGet)
+	fr.Put("/v1/dashboard/federation/connections/{chain_id}/agent-exposure", h.handleFedAgentExposurePut)
 	fr.Put("/v1/dashboard/federation/connections/{chain_id}/pause", h.handleFedPause)
 	fr.Get("/v1/dashboard/federation/connections/{chain_id}/pipe-contacts", h.handleFedPipeContactsGet)
 	fr.Put("/v1/dashboard/federation/connections/{chain_id}/pipe-contacts", h.handleFedPipeContactsPut)
@@ -982,18 +985,39 @@ func (h *DashboardHandler) handleFedRevoke(w http.ResponseWriter, r *http.Reques
 	fedWriteJSON(w, http.StatusOK, out)
 }
 
+// A peer whose only candidate is a circuit relay needs a longer probe budget
+// than a LAN neighbour: the relayed path adds two network legs and the relay's
+// handshake before the federation TLS handshake starts. Without this the probe
+// times out mid-handshake and CEREBRUM reports a reachable peer as unreachable,
+// which is indistinguishable from a real outage.
+func fedRelayProbeTimeout() time.Duration {
+	if ms, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SAGE_FED_RELAY_STATUS_TIMEOUT_MS"))); err == nil && ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	if ms, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SAGE_FED_STATUS_TIMEOUT_MS"))); err == nil && ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return 20 * time.Second
+}
+
 func (h *DashboardHandler) handleFedPeerStatus(w http.ResponseWriter, r *http.Request) {
 	if !h.fedReady(w) {
 		return
 	}
+	chain := chi.URLParam(r, "chain_id")
 	timeout := fedStatusTimeout
 	operatorRetry := r.URL.Query().Get("retry") == "1"
 	if operatorRetry {
 		timeout = fedRetryTimeout
 	}
+	if relayPreferred, ok := h.Federation.(interface{ RouteRelayPreferred(string) bool }); ok &&
+		relayPreferred.RouteRelayPreferred(chain) {
+		if relayBudget := fedRelayProbeTimeout(); relayBudget > timeout {
+			timeout = relayBudget
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
-	chain := chi.URLParam(r, "chain_id")
 	var st *federation.StatusResponse
 	var err error
 	if operatorRetry {

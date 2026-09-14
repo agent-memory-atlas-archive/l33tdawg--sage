@@ -281,8 +281,8 @@ test('native shell evidence is version-locked, private, and cannot promote an un
   assert.match(evidence, /SAGE_DAEMON_VERSION/);
   assert.match(
     daemonStager,
-    /SEMVER_PATTERN='\^11\\\.\(10\|11\|12\|13\|14\|15\|16\|17\|18\|19\)\\\./,
-    'the tagged daemon stager must accept the current v11.19 release series',
+    /SEMVER_PATTERN='\^11\\\.\(10\|11\|12\|13\|14\|15\|16\|17\|18\|19\|20\)\\\./,
+    'the tagged daemon stager must accept the current v11.20 release series',
   );
   assert.match(evidence, /Repair v11\.12\.0 native staging helper for immutable-tag recovery/);
   assert.match(evidence, /github\.event_name == 'workflow_dispatch'.*RELEASE_TAG == 'v11\.12\.0'/);
@@ -1140,7 +1140,15 @@ test('all private artifacts converge at one publication gate', () => {
     'native-shell-production-promotion',
   ]);
   assert.match(job('publication-gate'), /sha256sum -c checksums\.txt/);
-  assert.match(job('publication-gate'), /PYPI_API_TOKEN/);
+  // The gate used to require a PyPI token; publishing is Trusted Publishing
+  // (OIDC) now, so the token must be gone from both the gate and the publish
+  // step, and the step must carry the OIDC + environment binding that PyPI
+  // authenticates. A password in the publish step silently disables
+  // attestations, so this asserts the exact inverse of the old contract.
+  assert.doesNotMatch(job('publication-gate'), /PYPI_API_TOKEN/);
+  assert.doesNotMatch(job('publish-pypi'), /password:/);
+  assert.match(job('publish-pypi'), /id-token: write/);
+  assert.match(job('publish-pypi'), /environment: pypi/);
   assert.match(job('publication-gate'), /PyPI is immutable/);
   assert.match(job('publication-gate'), /remote != local/);
 });
