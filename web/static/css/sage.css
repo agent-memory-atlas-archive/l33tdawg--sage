@@ -7688,3 +7688,85 @@ input[type="range"]::-moz-range-thumb {
 @keyframes fc-orbit-breathe { 0%,100% { stroke-opacity:.12; } 50% { stroke-opacity:.4; } }
 @media(prefers-reduced-motion:reduce) { .fc-map .fc-orbit { animation:none; } }
 @media(max-width:420px) { .fc-map-tools .btn { padding:5px 8px; font-size:10px; } }
+
+/* --- Federated agent discovery (messaging exposure) --------------------- */
+.fed-exposure-modes {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    margin: 12px 0;
+}
+.fed-exposure-mode {
+    align-items: flex-start;
+    background: rgba(148, 163, 184, .06);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    display: flex;
+    gap: 10px;
+    padding: 10px 12px;
+}
+.fed-exposure-mode.active {
+    background: rgba(6, 182, 212, .1);
+    border-color: rgba(6, 182, 212, .45);
+}
+.fed-exposure-mode input { margin-top: 2px; }
+.fed-exposure-mode span { display: grid; gap: 3px; }
+.fed-exposure-mode small { color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+.fed-exposure-list {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    display: grid;
+    gap: 2px;
+    margin-top: 10px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 6px;
+}
+.fed-exposure-row {
+    align-items: center;
+    border-radius: 8px;
+    cursor: pointer;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: auto 1fr;
+    padding: 8px 10px;
+}
+.fed-exposure-row.on { background: rgba(6, 182, 212, .07); }
+.fed-exposure-row .fed-agent-identity { display: grid; gap: 2px; }
+.fed-exposure-row code { color: var(--text-muted); font-size: 11px; }
+.fed-exposure-hint { display: block; font-size: 11px; padding: 6px 10px 2px; }
+.fed-exposure-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 12px;
+}
+
+/* --- Agent editor drawer reachability -----------------------------------
+   .access-control-drawer is a fixed-height scroller, so the identity row (with
+   its × close button) and the save row must stay pinned while the policy body
+   scrolls. Without this the close button scrolled out of reach and Save policy
+   could sit below the fold with nothing on screen saying it existed. */
+.access-control-drawer > .v23-policy-title {
+    background: var(--bg-base);
+    padding-bottom: 10px;
+    position: sticky;
+    top: -18px;
+    z-index: 3;
+}
+.access-control-drawer > .v23-policy-title .access-control-drawer-close {
+    flex: none;
+    margin-left: 12px;
+}
+.access-control-drawer .v23-save-row {
+    background: var(--bg-base);
+    border-top: 1px solid var(--border-light);
+    bottom: -18px;
+    flex-wrap: wrap;
+    gap: 10px;
+    position: sticky;
+    padding-bottom: 18px;
+    z-index: 3;
+}

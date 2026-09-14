@@ -55,6 +55,80 @@ func TestNodeContactsRequireNoMemoryExportAndPreserveRestrictions(t *testing.T) 
 	require.Error(t, ValidateRemotePipeContactGrant(m.localChainID, &forged))
 }
 
+// TestNodeContactExposurePolicyNarrowsListingAndSearch is the headline contract
+// for operator-chosen messaging discovery: the shipped default advertises every
+// eligible ordinary agent, and narrowing the policy removes an agent from both
+// the paged listing and the exact-name lookup that name resolution uses. It
+// never touches memory Read.
+func TestNodeContactExposurePolicyNarrowsListingAndSearch(t *testing.T) {
+	ctx := context.Background()
+	m, ss, bs := newDrainTestManager(t)
+	ensurePipeContactAppV23(t, m, bs)
+	peerID := newPeerOperatorID(t)
+	agreement := configurePeerRBACConnection(t, m, ss, bs, "chain-peer", peerID, "host", nil, 4)
+	keep, hide := newPeerOperatorID(t), newPeerOperatorID(t)
+	seedPipeContactOrdinaryAgent(t, m, ss, bs, keep, "codex/kept", "active", 0, 10)
+	seedPipeContactOrdinaryAgent(t, m, ss, bs, hide, "codex/hidden", "active", 0, 20)
+	policy, err := m.getPeerRBACPolicyForAgreement(ctx, agreement)
+	require.NoError(t, err)
+	peer := &peerIdentity{ChainID: "chain-peer", AgentID: peerID, Agreement: agreement}
+
+	// Default posture: an unconfigured connection advertises both agents.
+	grant, err := m.LocalNodeContacts(ctx, "chain-peer", "")
+	require.NoError(t, err)
+	require.Len(t, grant.Contacts, 2, "an unconfigured connection keeps the documented default")
+
+	exposure, err := m.SetFederatedAgentExposure(
+		ctx, "chain-peer", store.FederatedAgentExposureModeSelected, []string{keep}, 0)
+	require.NoError(t, err)
+	require.Equal(t, []string{keep}, exposure.AgentIDs)
+
+	grant, err = m.LocalNodeContacts(ctx, "chain-peer", "")
+	require.NoError(t, err)
+	require.Len(t, grant.Contacts, 1)
+	require.Equal(t, keep, grant.Contacts[0].AgentID)
+
+	// Name resolution must not reach the hidden agent either: that lookup is
+	// what a peer uses to turn a friendly name into a routable address.
+	nameCandidates := []string{keep, hide}
+	lookup, _, err := m.buildPipeContactLookupGrant(ctx, peer, policy, PipeContactLookupRequest{
+		Name:              "codex/hidden",
+		AuthorizationMode: NodeMessageAuthorizationMode,
+	}, nameCandidates)
+	require.NoError(t, err)
+	require.Empty(t, lookup.Contacts, "a hidden agent must not be resolvable by name")
+	visibleLookup, _, err := m.buildPipeContactLookupGrant(ctx, peer, policy, PipeContactLookupRequest{
+		Name:              "codex/kept",
+		AuthorizationMode: NodeMessageAuthorizationMode,
+	}, nameCandidates)
+	require.NoError(t, err)
+	require.Len(t, visibleLookup.Contacts, 1)
+	require.Equal(t, keep, visibleLookup.Contacts[0].AgentID)
+
+	// An exact agent id is a routing address, not a directory lookup, but it is
+	// still resolved through the same projection, so a hidden agent is not
+	// reachable that way either.
+	exact, _, err := m.buildPipeContactLookupGrant(ctx, peer, policy, PipeContactLookupRequest{
+		Target:            hide,
+		AuthorizationMode: NodeMessageAuthorizationMode,
+	}, nil)
+	require.NoError(t, err)
+	require.Empty(t, exact.Contacts)
+
+	// Deny-all is its own mode and reports nothing.
+	_, err = m.SetFederatedAgentExposure(
+		ctx, "chain-peer", store.FederatedAgentExposureModeNone, nil, exposure.Revision)
+	require.NoError(t, err)
+	grant, err = m.LocalNodeContacts(ctx, "chain-peer", "")
+	require.NoError(t, err)
+	require.Empty(t, grant.Contacts)
+
+	// Discovery never carries memory authority: the policy owner still has no
+	// domain grant from this control.
+	legacy := statusForPeer(t, m, "chain-peer", peerID, agreement)
+	require.Empty(t, legacy.PeerRBACGrant.Domains)
+}
+
 func TestNodeContactPagesEnumerateEveryEligibleAgent(t *testing.T) {
 	ctx := context.Background()
 	m, ss, bs := newDrainTestManager(t)

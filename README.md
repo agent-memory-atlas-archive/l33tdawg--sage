@@ -220,6 +220,8 @@ uses re-enrollment; historical memory authorship is preserved.
 
 **A public-memory Merkle index ships dormant, and no fork is opened.** The sparse SHA-256 index over committed `PUBLIC=0` records, its migration builder and its stage/promote path are in the tree with their tests, and no production code calls any of them. Staged rows live under a local namespace that is excluded from the AppHash; promotion is what writes into AppHash-covered state, it is explicitly named for app-v28, and it is not reachable from a running node. Read that as preparation, not as activation.
 
+**Federation: you decide which of your agents the other side can find.** A trusted link advertised every eligible ordinary agent to the peer, which is convenient with one agent and confusing with a dozen — the other operator sees names they do not recognise and sends work to the wrong one. Each connection now carries an explicit discovery policy: **All agents** (the default), **Only the ones I pick**, or **None**. Ticking one agent narrows the connection to exactly that agent, ticking more adds them, and **Save discovery policy** commits it under the same revision-bound agreement the rest of federation uses. It governs listing and exact-name search only: it grants no memory Read and authorises no delivery, and an agent that still refuses federated delivery stays visible as **Not accepting** by design so the peer is never promised a route it cannot use.
+
 No consensus change or chain migration; app-v27 remains the ceiling.
 
 Container: `ghcr.io/l33tdawg/sage:11.20.0`. SDK 11.20.0.

@@ -180,6 +180,33 @@ off. CEREBRUM displays the mutable **Rename agent** label while routing remains
 bound to the immutable agent ID and exact remote chain, so duplicate friendly
 names cannot redirect a signed request.
 
+#### You choose which of your agents the other side can find
+
+On an upgraded link SAGE also advertises its own eligible ordinary agents so the
+other side can address them without a domain share. That is convenient with one
+or two agents and confusing with a dozen: the other operator sees names they do
+not recognise, picks one, and sends work to the wrong agent.
+
+Open the connection and use **Agent discovery on <peer>**:
+
+- **All agents** (the default) - every eligible ordinary agent here can be found
+  by the other side's listing and search.
+- **Only the ones I pick** - tick an agent and this connection becomes an
+  explicit list. Ticking the first one selects only that agent, so a single
+  click never means "expose everything"; tick more to add them.
+- **None** - the other side can find no agent here at all.
+
+Then press **Save discovery policy**. The change applies to their next listing,
+search, or `sage_find_agent` lookup; nothing already delivered is affected.
+
+This control is discovery only. It grants no memory access (that is the
+agent-export and manual domain lanes above) and it authorises no delivery (a
+discovered agent still has to accept, and its own Access Controls policy still
+applies). One deliberate asymmetry: an agent whose own policy refuses federated
+delivery stays listed, marked **Not accepting**, so the other side can see that
+it exists without being promised a route. Use **None** or an explicit list if
+you want it hidden entirely.
+
 New MCP clients use `sage_find_agent` followed by `sage_message_send`, then
 `sage_inbox`/`sage_messages_receive`, `sage_message_reply`,
 `sage_message_status`, and `sage_message_history`. The older `sage_pipe*` names

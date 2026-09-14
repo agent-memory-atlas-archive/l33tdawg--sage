@@ -123,6 +123,8 @@ func (h *DashboardHandler) registerFederationRoutes(r chi.Router) {
 	fr.Put("/v1/dashboard/federation/connections/{chain_id}/agent-exports", h.handleFedAgentExportsPut)
 	fr.Get("/v1/dashboard/federation/connections/{chain_id}/reader-restrictions", h.handleFedReaderRestrictionsGet)
 	fr.Put("/v1/dashboard/federation/connections/{chain_id}/reader-restrictions", h.handleFedReaderRestrictionsPut)
+	fr.Get("/v1/dashboard/federation/connections/{chain_id}/agent-exposure", h.handleFedAgentExposureGet)
+	fr.Put("/v1/dashboard/federation/connections/{chain_id}/agent-exposure", h.handleFedAgentExposurePut)
 	fr.Put("/v1/dashboard/federation/connections/{chain_id}/pause", h.handleFedPause)
 	fr.Get("/v1/dashboard/federation/connections/{chain_id}/pipe-contacts", h.handleFedPipeContactsGet)
 	fr.Put("/v1/dashboard/federation/connections/{chain_id}/pipe-contacts", h.handleFedPipeContactsPut)

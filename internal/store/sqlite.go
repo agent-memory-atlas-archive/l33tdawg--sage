@@ -930,6 +930,9 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 	if err := s.migratePrivateMedia(ctx); err != nil {
 		return fmt.Errorf("migrate private media: %w", err)
 	}
+	if err := s.migrateFederatedAgentExposure(ctx); err != nil {
+		return fmt.Errorf("migrate federated agent exposure: %w", err)
+	}
 	s.migratePipelineTransport(ctx)
 	if _, err := s.writeExecContext(ctx, `UPDATE pipeline_transport_outbox
 		SET expires_at=strftime('%Y-%m-%dT%H:%M:%fZ',created_at,'+100 years')

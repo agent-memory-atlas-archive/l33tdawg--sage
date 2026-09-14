@@ -216,7 +216,16 @@ func (m *Manager) buildPipeContactGrantForCandidates(ctx context.Context, peer *
 			return nil, errors.New("node messaging requires canonical ordinary-agent standing")
 		}
 		// Metadata-only membership: neither domain ownership nor memory Read is
-		// a prerequisite. Resolve each selected agent's current canonical standing.
+		// a prerequisite. Resolve each selected agent's current canonical
+		// standing, then apply this connection's operator-chosen discovery
+		// policy. An agent that refuses federated delivery is still advertised
+		// with accepting=false by design, so the peer can see that the agent
+		// exists without being promised a route; only the operator's discovery
+		// policy removes an agent from listing and search.
+		exposureGate, exposureErr := m.agentExposureGate(ctx, peer, policy)
+		if exposureErr != nil {
+			return nil, exposureErr
+		}
 		for agentID := range agentByID {
 			if !isCanonicalAgentID(agentID) {
 				continue
@@ -225,9 +234,19 @@ func (m *Manager) buildPipeContactGrantForCandidates(ctx context.Context, peer *
 			if eligibilityErr != nil {
 				return nil, eligibilityErr
 			}
-			if eligible {
-				byAgent[agentID] = &pipeContactAggregate{agentID: agentID, domains: []PipeContactDomain{}}
+			if !eligible {
+				continue
 			}
+			if exposureGate != nil {
+				visible, visibleErr := exposureGate(agentID)
+				if visibleErr != nil {
+					return nil, visibleErr
+				}
+				if !visible {
+					continue
+				}
+			}
+			byAgent[agentID] = &pipeContactAggregate{agentID: agentID, domains: []PipeContactDomain{}}
 		}
 	} else {
 		effectiveDomains, exportErr = m.effectiveAgentExportDomainPermissions(ctx, peer, policy)

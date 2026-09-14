@@ -1118,6 +1118,8 @@ export function fedPermissionsGet(chainId, live = true) {
 export function fedPermissionsSet(chainId, permissions) { return fedPut(`/v1/dashboard/federation/connections/${encodeURIComponent(chainId)}/permissions`, { permissions }); }
 export function fedAgentExportsGet(chainId) { return fedFetch(`/v1/dashboard/federation/connections/${encodeURIComponent(chainId)}/agent-exports`); }
 export function fedAgentExportSet(chainId, exportPolicy) { return fedPut(`/v1/dashboard/federation/connections/${encodeURIComponent(chainId)}/agent-exports`, exportPolicy); }
+export function fedAgentExposureGet(chainId) { return fedFetch(`/v1/dashboard/federation/connections/${encodeURIComponent(chainId)}/agent-exposure`); }
+export function fedAgentExposureSet(chainId, exposurePolicy) { return fedPut(`/v1/dashboard/federation/connections/${encodeURIComponent(chainId)}/agent-exposure`, exposurePolicy); }
 export function fedReaderRestrictionsGet(chainId) { return fedFetch(`/v1/dashboard/federation/connections/${encodeURIComponent(chainId)}/reader-restrictions`); }
 export function fedReaderRestrictionSet(chainId, restriction) { return fedPut(`/v1/dashboard/federation/connections/${encodeURIComponent(chainId)}/reader-restrictions`, restriction); }
 export function fedPause(chainId, paused) { return fedPut(`/v1/dashboard/federation/connections/${encodeURIComponent(chainId)}/pause`, { paused }); }
