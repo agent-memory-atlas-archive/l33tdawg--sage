@@ -222,6 +222,20 @@ legacy `pipe-*` compatibility rows retain their bounded cleanup policy.
 
 ### Roaming and route recovery
 
+**A relayed link is slower than a LAN link, and SAGE budgets for that.** A
+Circuit Relay v2 path costs the dialer-to-relay leg, the relay-to-peer leg and
+the relay's own handshake before the encrypted federation handshake even starts,
+so a cross-region relay can need several round trips at a few hundred
+milliseconds each. Relayed dials therefore get their own, larger time budget
+than direct ones, and a probe or route refresh against a peer whose only
+candidate is a relay uses the longer budget instead of the LAN-shaped one. If a
+connection reports **Secure relay unavailable**, the relay itself is the
+problem; **No answer in time** or **Connection closed during handshake** mean the
+path is slow rather than broken — retry, and prefer a relay near both machines.
+The budgets are operator-tunable (see the `SAGE_FED_*` variables in
+`docs/reference/environment-variables.md`), which is the lever for a
+pathologically slow link.
+
 Established v11.17.7+ links persist signed route snapshots for the stable peer
 identity and rank safe Direct and Secure relay candidates after address or
 network changes. Both nodes republish after relay reservation changes and

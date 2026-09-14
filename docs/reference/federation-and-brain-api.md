@@ -717,7 +717,7 @@ Every route 501s when the transport is not wired (`fedReady`,
 | Method + path | Handler | Purpose |
 |---|---|---|
 | `GET /v1/dashboard/federation/shareable-domains` | `handleFedShareableDomains` (`web/federation_permissions.go`) | List existing registered/observed local domains and whether this operator may share them; never creates a domain. A row may include durable `copy_sources:[{chain_id,memory_count}]` from admitted local copies, without peer endpoints, keys, content, or policy metadata. |
-| `GET /v1/dashboard/federation/connections` | `handleFedConnections` (`web/federation_join.go:852-915`) | List agreements with `sharing_paused` and durable end-event context for past rows. |
+| `GET /v1/dashboard/federation/connections` | `handleFedConnections` (`web/federation_join.go:853-916`) | List agreements with `sharing_paused` and durable end-event context for past rows. |
 | `GET /v1/dashboard/federation/connections/{chain_id}/permissions` | `handleFedPermissionsGet` (`web/federation_permissions.go:212-300`) | Return editable `local_permissions`, `local_paused`, and the authenticated peer's read-only permissions/pause state. `?live=0` deliberately skips the peer probe and returns the durable local snapshot immediately with `remote_known:false`; CEREBRUM uses that for first paint, then consumes the single authenticated connection-status refresh owned by the parent page. |
 | `PUT /v1/dashboard/federation/connections/{chain_id}/permissions` | `handleFedPermissionsPut` (`web/federation_permissions.go:375-539`) | Replace this node's complete existing-domain Read/Copy snapshot for the frozen peer. A true `write` field is rejected. |
 | `GET/PUT /v1/dashboard/federation/connections/{chain_id}/agent-exports` | `handleFedAgentExportsGet/Put` (`web/federation_agent_exports.go`) | List or CAS-mutate (`active`/`paused`) the exact active ordinary local agents exported into this pairwise federation. Current owned domains are derived live; classification ceiling and domain exclusions may narrow them. Pause removes the derived memory Read grant. On peers using `node-messaging-v1`, discovery and messaging are independent of exports; legacy contacts still require an export. Revocation is reserved for internal generation retirement. |
@@ -731,15 +731,15 @@ Every route 501s when the transport is not wired (`fedReady`,
 | `POST /v1/dashboard/federation/groups/refresh` | `handleFedGroupRefresh` (`web/federation_join.go`) | Prompt one bounded group-journal anti-entropy pass and wait for it to finish before CEREBRUM reloads the local group projection. Ordinary group-list polling remains a local SQLite read. |
 | `GET /v1/dashboard/federation/join/routes` | `handleFedJoinRoutes` (`web/federation_join.go`) | Return locally prepared Direct/Secure relay candidates. `ready` means prepared locally, not proven reachable and not currently selected. |
 | `POST /v1/dashboard/federation/join/host/create` | `handleFedHostCreate` (`web/federation_join.go`) | Host H1; current CEREBRUM sends `transport:"auto"`. `lan` and `internet` remain compatibility inputs for older clients. |
-| `POST /v1/dashboard/federation/join/host/scan-return` | `handleFedHostScanReturn` (`web/federation_join.go:1115`) | Host scans guest return QR |
-| `GET /v1/dashboard/federation/join/host/{session_id}` | `handleFedHostStatus` (`web/federation_join.go:1134`) | Host wizard poll |
-| `POST /v1/dashboard/federation/join/host/{session_id}/approve` | `handleFedHostApprove` (`web/federation_join.go:1146`) | Host approval #1 |
-| `POST /v1/dashboard/federation/join/host/{session_id}/abort` | `handleFedHostAbort` (`web/federation_join.go:1196`) | Burn session |
-| `POST /v1/dashboard/federation/join/guest/scan` | `handleFedGuestScan` (`web/federation_join.go:1213`) | Guest scan host QR |
-| `POST /v1/dashboard/federation/join/guest/request` | `handleFedGuestRequest` (`web/federation_join.go:1239`) | Guest request |
-| `GET /v1/dashboard/federation/join/guest/{session_id}/status` | `handleFedGuestStatus` (`web/federation_join.go:1270`) | Guest poll host approval |
+| `POST /v1/dashboard/federation/join/host/scan-return` | `handleFedHostScanReturn` (`web/federation_join.go:1137`) | Host scans guest return QR |
+| `GET /v1/dashboard/federation/join/host/{session_id}` | `handleFedHostStatus` (`web/federation_join.go:1156`) | Host wizard poll |
+| `POST /v1/dashboard/federation/join/host/{session_id}/approve` | `handleFedHostApprove` (`web/federation_join.go:1168`) | Host approval #1 |
+| `POST /v1/dashboard/federation/join/host/{session_id}/abort` | `handleFedHostAbort` (`web/federation_join.go:1218`) | Burn session |
+| `POST /v1/dashboard/federation/join/guest/scan` | `handleFedGuestScan` (`web/federation_join.go:1235`) | Guest scan host QR |
+| `POST /v1/dashboard/federation/join/guest/request` | `handleFedGuestRequest` (`web/federation_join.go:1261`) | Guest request |
+| `GET /v1/dashboard/federation/join/guest/{session_id}/status` | `handleFedGuestStatus` (`web/federation_join.go:1292`) | Guest poll host approval |
 | `POST /v1/dashboard/federation/join/guest/{session_id}/abort` | `handleFedGuestAbort` (`web/federation_join.go`) | Propagate a guest-side Stop and zeroize the local draft |
-| `POST /v1/dashboard/federation/join/guest/confirm` | `handleFedGuestConfirm` (`web/federation_join.go:1304`) | Guest approval #2 |
+| `POST /v1/dashboard/federation/join/guest/confirm` | `handleFedGuestConfirm` (`web/federation_join.go:1326`) | Guest approval #2 |
 
 (JOIN handlers live in `web/federation_join.go`.) The dashboard owns automatic
 route intent and the fixed trust-only compatibility scope; the remaining join

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,8 +50,14 @@ const (
 	RouteRecoveryStaleDirect             = "stale_direct"
 	RouteRecoveryTrustGenerationMismatch = "trust_generation_mismatch"
 	RouteRecoveryRelayUnavailable        = "relay_unavailable"
-	RouteRecoverySecurityBlocked         = "security_blocked"
-	RouteRecoveryLegacyRepairRequired    = "legacy_repair_required"
+	// RouteRecoveryTimeout and RouteRecoveryHandshakeFailed are transport-layer
+	// verdicts. They exist so a slow or half-open path is never reported as a
+	// relay-availability failure: the operator remedy is different (wait, retry,
+	// or prefer a nearer relay) from "your relay is unusable".
+	RouteRecoveryTimeout              = "timeout"
+	RouteRecoveryHandshakeFailed      = "handshake_failed"
+	RouteRecoverySecurityBlocked      = "security_blocked"
+	RouteRecoveryLegacyRepairRequired = "legacy_repair_required"
 )
 
 type RouteRecoveryError struct {
@@ -141,6 +148,21 @@ func classifyRouteRecoveryError(err error, hint string) error {
 	case strings.Contains(message, "federation transport is disabled"),
 		strings.Contains(message, "federation is off"):
 		return routeRecoveryError(RouteRecoveryDisabled, err)
+	// Transport verdicts beat the availability hint. The hint only knows which
+	// KIND of candidate was present ("you have a relay address"), which is not a
+	// statement about why the attempt ended. Reporting a deadline or a
+	// mid-handshake close as relay_unavailable sends the operator to inspect a
+	// relay that is often working fine, just slowly.
+	case errors.Is(err, context.DeadlineExceeded),
+		strings.Contains(message, "deadline exceeded"),
+		strings.Contains(message, "context deadline"):
+		return routeRecoveryError(RouteRecoveryTimeout, err)
+	case strings.Contains(message, "handshake"),
+		strings.Contains(message, "eof"),
+		strings.Contains(message, "connection reset"),
+		strings.Contains(message, "stream reset"),
+		strings.Contains(message, "broken pipe"):
+		return routeRecoveryError(RouteRecoveryHandshakeFailed, err)
 	case hint != "":
 		return routeRecoveryError(hint, err)
 	default:
@@ -171,12 +193,64 @@ func requiredRouteGeneration(ctx context.Context) string {
 }
 
 const (
-	routeCandidateDelay   = 175 * time.Millisecond
-	routeRefreshEvery     = 5 * time.Minute
-	routeRefreshTimeout   = 8 * time.Second
-	routeRetryDedupWindow = time.Second
-	routeSnapshotTTL      = 24 * time.Hour
+	routeCandidateDelay = 175 * time.Millisecond
+	routeRefreshEvery   = 5 * time.Minute
+	// A relayed path is not a LAN path. A Circuit Relay v2 hop adds the
+	// dialer->relay leg, the relay->peer leg and the relay's own handshake, so a
+	// cross-region relay can cost several round trips at ~300ms each before the
+	// inner federation TLS handshake even starts. These two budgets are
+	// deliberately different, and the relay one is chosen only when the frozen
+	// candidate set actually contains a circuit target.
+	routeRefreshTimeoutDirect = 8 * time.Second
+	routeRefreshTimeoutRelay  = 20 * time.Second
+	routeRetryDedupWindow     = time.Second
+	routeSnapshotTTL          = 24 * time.Hour
 )
+
+// RouteRelayPreferred reports whether the frozen candidate set for this chain
+// contains a circuit target. Callers that bound a whole probe or refresh use it
+// to size a deadline for a relayed path instead of judging it by a LAN-shaped
+// budget. Diagnostics metadata only: it never authorizes anything.
+func (m *Manager) RouteRelayPreferred(remoteChainID string) bool {
+	hooks := m.joinP2PHooks()
+	if hooks.LoadSnapshot == nil || remoteChainID == "" {
+		return false
+	}
+	snapshot, ok := hooks.LoadSnapshot(remoteChainID)
+	if !ok {
+		return false
+	}
+	for _, target := range snapshot.Addrs {
+		if routeKindForTarget(target) == RouteKindRelay {
+			return true
+		}
+	}
+	return false
+}
+
+// routeRefreshBudget returns the whole-operation budget for a peer: the direct
+// budget unless a relayed candidate exists, so a slow-but-healthy relay is not
+// reported as unreachable by construction.
+func (m *Manager) routeRefreshBudget(remoteChainID string) time.Duration {
+	if m.RouteRelayPreferred(remoteChainID) {
+		return envRouteDuration("SAGE_FED_RELAY_TIMEOUT_MS", routeRefreshTimeoutRelay)
+	}
+	return envRouteDuration("SAGE_FED_ROUTE_TIMEOUT_MS", routeRefreshTimeoutDirect)
+}
+
+// envRouteDuration reads a positive millisecond budget from the environment and
+// falls back to the built-in default for an absent or invalid value.
+func envRouteDuration(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms <= 0 {
+		return fallback
+	}
+	return time.Duration(ms) * time.Millisecond
+}
 
 // RouteSnapshot is the crash-safe, generation-bound connectivity projection
 // learned from one authenticated peer. Revision is sender-monotonic within the
@@ -609,7 +683,7 @@ func (m *Manager) beginRouteRefreshExact(parent context.Context, remoteChainID s
 			m.recordRouteFailure(remoteChainID, call.err, false)
 			return
 		}
-		ctx, cancel := context.WithTimeout(parent, routeRefreshTimeout)
+		ctx, cancel := context.WithTimeout(parent, m.routeRefreshBudget(remoteChainID))
 		defer cancel()
 		if m.routeRefreshFn == nil {
 			currentAgreement, current, bindingErr := m.routeRefreshAgreementBinding(ctx, remoteChainID)

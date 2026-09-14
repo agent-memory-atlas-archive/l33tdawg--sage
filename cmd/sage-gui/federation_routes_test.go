@@ -38,6 +38,53 @@ type routedTestConn struct {
 
 func (c *routedTestConn) P2PRoute() (string, bool) { return c.target, c.limited }
 
+// TestDialFederationP2PRouteTargetsGivesRelayedCandidatesMoreTime pins the fix
+// for the flapping relay: a relayed candidate needs several round trips (two
+// network legs plus the relay's handshake) before the federation TLS handshake
+// even starts, so it must not be judged with the direct 2s budget. The budgets
+// are compressed here so the ordering is provable without a slow test.
+func TestDialFederationP2PRouteTargetsGivesRelayedCandidatesMoreTime(t *testing.T) {
+	t.Setenv("SAGE_FED_DIRECT_CANDIDATE_TIMEOUT_MS", "60")
+	t.Setenv("SAGE_FED_RELAY_CANDIDATE_TIMEOUT_MS", "600")
+	relayTarget := "/ip4/65.108.81.134/tcp/4001/p2p/12D3KooWrelay/p2p-circuit/p2p/12D3KooWpeer"
+	directTarget := "/ip4/192.168.30.9/tcp/51458/p2p/12D3KooWdirect"
+
+	slowDial := func(delay time.Duration) func(context.Context, string) (net.Conn, error) {
+		return func(ctx context.Context, _ string) (net.Conn, error) {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				client, peer := net.Pipe()
+				t.Cleanup(func() { _ = peer.Close() })
+				return client, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+
+	// Slower than the direct budget, well inside the relay budget.
+	winner, handled, err := dialFederationP2PRouteTargets(
+		context.Background(), []string{relayTarget}, slowDial(200*time.Millisecond), nil)
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.Equal(t, relayTarget, winner.Target)
+	require.Equal(t, federation.RouteKindRelay, winner.Kind,
+		"a circuit candidate must be dialed as a relay route")
+	if winner.Conn != nil {
+		_ = winner.Conn.Close()
+	}
+
+	// The same latency on a direct candidate must still be cut off at the
+	// direct budget: the longer relay budget is not a blanket widening.
+	_, handled, err = dialFederationP2PRouteTargets(
+		context.Background(), []string{directTarget}, slowDial(200*time.Millisecond), nil)
+	require.True(t, handled)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 func TestDialFederationP2PRouteTargetsClosesConcurrentLoser(t *testing.T) {
 	first, firstPeer := net.Pipe()
 	second, secondPeer := net.Pipe()
