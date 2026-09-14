@@ -368,12 +368,12 @@ func (s *SQLiteStore) PutWorkflowJournalGuarded(ctx context.Context, agentID, re
 	}
 	defer transaction.Rollback() //nolint:errcheck
 	if guard != nil {
-		control, err := readWorkflowJournal(ctx, transaction, active, agentID, condition.RecordID)
-		if errors.Is(err, ErrWorkflowJournalNotFound) {
+		control, controlErr := readWorkflowJournal(ctx, transaction, active, agentID, condition.RecordID)
+		if errors.Is(controlErr, ErrWorkflowJournalNotFound) {
 			return nil, ErrWorkflowJournalConflict
 		}
-		if err != nil {
-			return nil, err
+		if controlErr != nil {
+			return nil, controlErr
 		}
 		if control.Kind != "conversation_control" || control.Revision != condition.ExpectedRevision {
 			return nil, ErrWorkflowJournalConflict
@@ -401,14 +401,14 @@ func (s *SQLiteStore) PutWorkflowJournalGuarded(ctx context.Context, agentID, re
 			return nil, ErrWorkflowJournalConflict
 		}
 		var count int
-		if err := transaction.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_journal WHERE agent_id = ?`, agentID).Scan(&count); err != nil {
-			return nil, fmt.Errorf("count workflow journal: %w", err)
+		if countErr := transaction.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_journal WHERE agent_id = ?`, agentID).Scan(&count); countErr != nil {
+			return nil, fmt.Errorf("count workflow journal: %w", countErr)
 		}
 		if count >= MaxWorkflowJournalRecords {
 			return nil, ErrWorkflowJournalLimit
 		}
-		if err := transaction.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_journal`).Scan(&count); err != nil {
-			return nil, fmt.Errorf("count workflow journal node: %w", err)
+		if nodeCountErr := transaction.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_journal`).Scan(&count); nodeCountErr != nil {
+			return nil, fmt.Errorf("count workflow journal node: %w", nodeCountErr)
 		}
 		if count >= MaxWorkflowJournalNodeRecords {
 			return nil, ErrWorkflowJournalLimit

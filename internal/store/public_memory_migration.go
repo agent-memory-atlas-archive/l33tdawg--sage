@@ -47,42 +47,42 @@ func (s *BadgerStore) BuildPublicMemoryMigration(ctx context.Context, target *Ba
 	result := &PublicMemoryMigration{SourceReadTimestamp: snapshot.ReadTs()}
 	copy(result.SourceAppHash[:], hash)
 	initial := target.BeginConsensusTransaction(nil)
-	if err := initial.InitializeEmptyPublicMemoryIndex(); err != nil {
+	if initErr := initial.InitializeEmptyPublicMemoryIndex(); initErr != nil {
 		initial.DiscardConsensusTransaction()
-		return nil, err
+		return nil, initErr
 	}
-	if err := initial.CommitConsensusTransaction(); err != nil {
-		return nil, err
+	if commitErr := initial.CommitConsensusTransaction(); commitErr != nil {
+		return nil, commitErr
 	}
 	var batch []*PublicMemoryLeaf
 	flush := func() error {
-		if err := ctx.Err(); err != nil {
-			return err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
 		transaction := target.BeginConsensusTransaction(nil)
 		defer transaction.DiscardConsensusTransaction()
 		for _, leaf := range batch {
-			if err := transaction.SetMemoryHash(leaf.MemoryID, leaf.ContentHash[:], leaf.Status); err != nil {
-				return err
+			if hashErr := transaction.SetMemoryHash(leaf.MemoryID, leaf.ContentHash[:], leaf.Status); hashErr != nil {
+				return hashErr
 			}
-			if err := transaction.SetMemoryDomain(leaf.MemoryID, leaf.Domain); err != nil {
-				return err
+			if domainErr := transaction.SetMemoryDomain(leaf.MemoryID, leaf.Domain); domainErr != nil {
+				return domainErr
 			}
-			if err := transaction.SetMemoryAuthor(leaf.MemoryID, leaf.Author); err != nil {
-				return err
+			if authorErr := transaction.SetMemoryAuthor(leaf.MemoryID, leaf.Author); authorErr != nil {
+				return authorErr
 			}
-			if err := transaction.SetMemoryAuthorPrincipal(leaf.MemoryID, leaf.AuthorPrincipal); err != nil {
-				return err
+			if principalErr := transaction.SetMemoryAuthorPrincipal(leaf.MemoryID, leaf.AuthorPrincipal); principalErr != nil {
+				return principalErr
 			}
-			if err := transaction.SetMemoryClassification(leaf.MemoryID, 0); err != nil {
-				return err
+			if classErr := transaction.SetMemoryClassification(leaf.MemoryID, 0); classErr != nil {
+				return classErr
 			}
-			if err := transaction.SyncPublicMemoryIndex(leaf.MemoryID); err != nil {
-				return err
+			if syncErr := transaction.SyncPublicMemoryIndex(leaf.MemoryID); syncErr != nil {
+				return syncErr
 			}
 		}
-		if err := transaction.CommitConsensusTransaction(); err != nil {
-			return err
+		if flushCommitErr := transaction.CommitConsensusTransaction(); flushCommitErr != nil {
+			return flushCommitErr
 		}
 		batch = nil
 		return nil
@@ -93,13 +93,13 @@ func (s *BadgerStore) BuildPublicMemoryMigration(ctx context.Context, target *Ba
 	defer iterator.Close()
 	prefix := []byte("memory:")
 	for iterator.Seek(prefix); iterator.ValidForPrefix(prefix); iterator.Next() {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		if scanCtxErr := ctx.Err(); scanCtxErr != nil {
+			return nil, scanCtxErr
 		}
 		identifier := string(iterator.Item().Key()[len(prefix):])
-		leaf, err := publicLeafFromCanonical(reader, identifier)
-		if err != nil {
-			return nil, err
+		leaf, leafErr := publicLeafFromCanonical(reader, identifier)
+		if leafErr != nil {
+			return nil, leafErr
 		}
 		result.Scanned++
 		if leaf != nil {
@@ -107,18 +107,18 @@ func (s *BadgerStore) BuildPublicMemoryMigration(ctx context.Context, target *Ba
 			batch = append(batch, leaf)
 		}
 		if len(batch) == publicMigrationBatch {
-			if err := flush(); err != nil {
-				return nil, err
+			if flushErr := flush(); flushErr != nil {
+				return nil, flushErr
 			}
 		}
 	}
 	if len(batch) != 0 {
-		if err := flush(); err != nil {
-			return nil, err
+		if tailFlushErr := flush(); tailFlushErr != nil {
+			return nil, tailFlushErr
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if doneCtxErr := ctx.Err(); doneCtxErr != nil {
+		return nil, doneCtxErr
 	}
 	result.Root, err = target.PublicMemoryRoot()
 	if err != nil {

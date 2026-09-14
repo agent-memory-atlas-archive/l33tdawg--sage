@@ -229,7 +229,7 @@ func TestWorkflowJournalSealedBindingAndCorruption(t *testing.T) {
 }
 
 func TestWorkflowJournalRestartAndWrongKey(t *testing.T) {
-	store, active, keyPath := workflowStore(t)
+	store, _, keyPath := workflowStore(t)
 	identifier := uuid.NewString()
 	workflowPut(t, store, workflowActor, identifier, "mesh_inbound", `{ "opaque": true }`, 0)
 	workflowPut(t, store, workflowActor, identifier, "mesh_inbound", `{ "opaque": false }`, 1)
@@ -241,9 +241,9 @@ func TestWorkflowJournalRestartAndWrongKey(t *testing.T) {
 	reopened.SetVaultExpected(true)
 	_, err = reopened.GetWorkflowJournal(context.Background(), workflowActor, identifier)
 	require.ErrorIs(t, err, ErrWorkflowJournalVaultRequired)
-	active, err = vault.Open(keyPath, "synthetic-journal-fixture")
+	reopenedVault, err := vault.Open(keyPath, "synthetic-journal-fixture")
 	require.NoError(t, err)
-	reopened.SetVault(active)
+	reopened.SetVault(reopenedVault)
 	got, err := reopened.GetWorkflowJournal(context.Background(), workflowActor, identifier)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), got.Revision)

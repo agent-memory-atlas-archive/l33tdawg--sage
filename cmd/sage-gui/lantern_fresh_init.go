@@ -73,12 +73,12 @@ func initializeFreshLantern(home string, cfg *Config, initialize func(string, st
 	if err != nil {
 		return nil, errors.New("initialization already claimed")
 	}
-	if err := claim.Sync(); err != nil {
+	if syncErr := claim.Sync(); syncErr != nil {
 		claim.Close()
-		return nil, err
+		return nil, syncErr
 	}
-	if err := claim.Close(); err != nil {
-		return nil, err
+	if closeErr := claim.Close(); closeErr != nil {
+		return nil, closeErr
 	}
 	directory, err := os.Open(home)
 	if err != nil {
@@ -89,7 +89,7 @@ func initializeFreshLantern(home string, cfg *Config, initialize func(string, st
 	if err != nil {
 		return nil, err
 	}
-	if err := initialize(filepath.Join(cfg.DataDir, "cometbft"), cfg.AgentKey, cfg.VendoredAgentBootstrap); err != nil {
+	if initErr := initialize(filepath.Join(cfg.DataDir, "cometbft"), cfg.AgentKey, cfg.VendoredAgentBootstrap); initErr != nil {
 		return nil, errors.New("initialization incomplete; preserve state for reconciliation")
 	}
 	publicID, err := publicIdentity(filepath.Join(filepath.Dir(home), "identity", "lantern-public.key"))
@@ -118,8 +118,8 @@ func runLanternFreshInit(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := freshLanternPaths(lanternHome, cfg); err != nil {
-		return err
+	if pathErr := freshLanternPaths(lanternHome, cfg); pathErr != nil {
+		return pathErr
 	}
 	lock, err := acquireInstanceLock(lanternHome)
 	if err != nil {
@@ -127,9 +127,9 @@ func runLanternFreshInit(args []string) error {
 	}
 	defer func() { _ = lock.Close() }()
 	result, err := initializeFreshLantern(lanternHome, cfg, initCometBFTConfigWithBootstrap, func(path string) (string, error) {
-		key, err := loadOrGenerateKey(path)
-		if err != nil {
-			return "", err
+		key, keyErr := loadOrGenerateKey(path)
+		if keyErr != nil {
+			return "", keyErr
 		}
 		return hex.EncodeToString(key[32:]), nil
 	})

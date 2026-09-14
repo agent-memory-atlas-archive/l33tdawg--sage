@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -35,7 +36,12 @@ func TestFederatedAgentExposureSelectedRoundTripAndModeClearing(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, selected.Configured)
 	require.Equal(t, int64(1), selected.Revision)
-	require.Equal(t, []string{first, second}, selected.AgentIDs,
+	// Compare against a sorted copy of the inputs: the generated agent ids are
+	// random, so a fixed [first, second] literal only passes when the two
+	// happen to sort that way.
+	expected := append([]string(nil), first, second)
+	sort.Strings(expected)
+	require.Equal(t, expected, selected.AgentIDs,
 		"the allow list is stored as a sorted, de-duplicated snapshot")
 
 	reloaded, err := s.GetFederatedAgentExposure(ctx, binding)

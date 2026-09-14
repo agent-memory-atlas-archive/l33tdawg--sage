@@ -162,14 +162,14 @@ func (s *BadgerStore) ValidatePublicMemoryStage() error {
 				return ErrPublicMemoryIndex
 			}
 			hash.Write(key)
-			if err := iterator.Item().Value(func(value []byte) error {
+			if valueErr := iterator.Item().Value(func(value []byte) error {
 				if len(value) != 32 {
 					return ErrPublicMemoryIndex
 				}
 				hash.Write(value)
 				return nil
-			}); err != nil {
-				return err
+			}); valueErr != nil {
+				return valueErr
 			}
 		}
 		if !bytes.Equal(hash.Sum(nil), manifest[72:104]) {
@@ -245,16 +245,16 @@ func (s *BadgerStore) ComputePublicMemoryAppHash() ([]byte, error) {
 				}
 			}
 			hash.Write(key)
-			if err := iterator.Item().Value(func(value []byte) error { hash.Write(value); return nil }); err != nil {
-				return err
+			if itemErr := iterator.Item().Value(func(value []byte) error { hash.Write(value); return nil }); itemErr != nil {
+				return itemErr
 			}
 		}
-		if err := s.visitPromotedAppV23Stage(txn, func(key, value []byte) error {
+		if visitErr := s.visitPromotedAppV23Stage(txn, func(key, value []byte) error {
 			hash.Write(key)
 			hash.Write(value)
 			return nil
-		}); err != nil {
-			return err
+		}); visitErr != nil {
+			return visitErr
 		}
 		result, err = PublicMemoryCompositeHash(hash.Sum(nil), root[:])
 		return err

@@ -181,17 +181,17 @@ func decodeWorkflowJournalObject(raw []byte, allowed ...string) (map[string]json
 	}
 	fields := make(map[string]json.RawMessage)
 	for decoder.More() {
-		token, err := decoder.Token()
+		token, tokenErr := decoder.Token()
 		name, text := token.(string)
 		permitted := false
 		for _, field := range allowed {
 			permitted = permitted || name == field
 		}
-		if err != nil || !text || fields[name] != nil || !permitted {
+		if tokenErr != nil || !text || fields[name] != nil || !permitted {
 			return nil, false
 		}
 		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
+		if decodeErr := decoder.Decode(&value); decodeErr != nil {
 			return nil, false
 		}
 		fields[name] = value

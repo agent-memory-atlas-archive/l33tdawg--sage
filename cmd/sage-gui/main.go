@@ -56,7 +56,7 @@ func main() {
 		err = runLanternFreshInit(os.Args[2:])
 	case "check-lantern-private-config":
 		if len(os.Args) != 2 || os.Getenv("SAGE_LANTERN_PRIVATE_LISTENERS") != "1" {
-			err = fmt.Errorf("Lantern private listener policy required")
+			err = fmt.Errorf("lantern private listener policy required")
 		} else {
 			_, err = LoadConfig()
 		}
