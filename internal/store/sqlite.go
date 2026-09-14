@@ -940,7 +940,7 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 	//
 	// Two details here are load-bearing. The predicate must name the event kind:
 	// a destination re-derives a RESULT event's lifetime from the signed proof as
-	// exactly federation.pipeEventResultLifetime (24h) and rejects every other
+	// exactly a supported reply window (7 days, or the legacy 24 hours) and rejects every other
 	// value as "invalid pipeline agent proof", while an imported federated message
 	// carries a receiver-local id of the form msg-fed-… that also matched 'msg-%'.
 	// And the value must be spelled '+36500 days': a destination recomputes a
@@ -959,13 +959,15 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 		return fmt.Errorf("extend canonical message transport retention: %w", err)
 	}
 	// Repair rows an earlier build already extended through that over-broad
-	// predicate: restore the only lifetime the destination will accept so a
-	// pending reply is deliverable again, and so an aged one terminalizes through
-	// the ordinary expiry sweep instead of retrying forever.
+	// predicate: restore a supported reply window so a pending reply is
+	// deliverable again, and so an aged one terminalizes through the ordinary
+	// expiry sweep instead of retrying forever. The window here is the current
+	// federation.PipeEventResultLifetime (7 days); a destination older than that
+	// value is handled at delivery time by the one-shot downgrade.
 	if _, err := s.writeExecContext(ctx, `UPDATE pipeline_transport_outbox
-		SET expires_at=strftime('%Y-%m-%dT%H:%M:%fZ',created_at,'+24 hours')
+		SET expires_at=strftime('%Y-%m-%dT%H:%M:%fZ',created_at,'+168 hours')
 		WHERE event_kind='result' AND state='pending'
-		  AND strftime('%s',expires_at)>strftime('%s',created_at,'+24 hours')`); err != nil {
+		  AND strftime('%s',expires_at)>strftime('%s',created_at,'+168 hours')`); err != nil {
 		return fmt.Errorf("restore foreign result transport retention: %w", err)
 	}
 	if err := s.migratePipelineV23SecurityColumns(ctx); err != nil {

@@ -217,6 +217,18 @@ func (m *Manager) deliverPipelineEvent(parent context.Context, ss *store.SQLiteS
 		m.recordPipelineDeliveryError(ss, outbox, err, terminal, retryFloor)
 		return
 	}
+	if event.Kind == "result" {
+		// The destination answers every proof problem with the same opaque 400, so
+		// attribute our own envelope problems here instead of learning about them
+		// as an unattributable delivery failure. Log-only: a destination on an older
+		// build may still accept what this build would refuse, and dropping the
+		// reply would lose work rather than report anything.
+		if proofErr := resultEnvelopeProofProblem(event); proofErr != nil {
+			m.logger.Warn().Err(proofErr).Str("event_id", outbox.EventID).
+				Str("pipe_id", outbox.PipeID).Str("peer", outbox.RemoteChainID).
+				Msg("outbound result envelope fails this node's own destination checks")
+		}
+	}
 	push := m.pipeEventPushFn
 	if push == nil {
 		push = m.PushPipeEvent
@@ -334,6 +346,23 @@ func (m *Manager) deliverPipelineEvent(parent context.Context, ss *store.SQLiteS
 	retryFloor := time.Duration(0)
 	var httpErr *pipeEventHTTPError
 	if errors.As(err, &httpErr) {
+		// A destination older than the current reply window refuses an otherwise
+		// valid reply exactly once per proof. Narrow this row to the legacy window
+		// and retry: the proof is unchanged, so the destination's replay identity
+		// is unchanged too, and a second refusal is terminal below because the row
+		// no longer offers anything to downgrade.
+		if httpErr.Status == http.StatusBadRequest && outbox.EventKind == "result" {
+			downgraded, downgradeErr := ss.DowngradeFederatedResultLifetime(context.Background(), outbox.EventID)
+			if downgradeErr != nil {
+				m.logger.Warn().Err(downgradeErr).Str("event_id", outbox.EventID).
+					Msg("result reply-window downgrade was not recorded")
+			} else if downgraded {
+				m.logger.Warn().Str("event_id", outbox.EventID).Str("peer", outbox.RemoteChainID).
+					Msg("destination refused the signed reply; retrying with the legacy reply window")
+				m.recordPipelineDeliveryError(ss, outbox, err, false, 0)
+				return
+			}
+		}
 		switch httpErr.Status {
 		case http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound,
 			http.StatusConflict, http.StatusGone, http.StatusRequestEntityTooLarge,
@@ -531,7 +560,7 @@ func (m *Manager) buildPipelineEvent(ctx context.Context, ss *store.SQLiteStore,
 		// retention migration; letting that value reach the peer is exactly how an
 		// already-completed reply turns into a permanent "invalid pipeline agent
 		// proof" (400) instead of a delivery.
-		created, expires := resultEnvelopeLifetime(outbox.Proof)
+		created, expires := resultEnvelopeLifetime(outbox.Proof, outbox.ExpiresAt)
 		if !event.CreatedAt.Equal(created) || !event.ExpiresAt.Equal(expires) {
 			m.logger.Warn().Str("event_id", outbox.EventID).Str("pipe_id", outbox.PipeID).
 				Time("stored_created_at", event.CreatedAt).Time("stored_expires_at", event.ExpiresAt).
@@ -544,14 +573,43 @@ func (m *Manager) buildPipelineEvent(ctx context.Context, ss *store.SQLiteStore,
 	return event, false, nil
 }
 
-// resultEnvelopeLifetime is the ONLY lifetime a destination accepts for a result
-// event (pipe_transport.go prevalidatePipeEventAgentProof and applyPipeResult
-// both demand created == proof.Timestamp and expires == created +
-// pipeEventResultLifetime). Deriving it from the signed proof keeps both sides
-// in agreement by construction, whatever the local retention state is.
-func resultEnvelopeLifetime(proof store.PipelineAgentProof) (created, expires time.Time) {
+// resultEnvelopeLifetime is the only lifetime a destination accepts for a result
+// event (prevalidatePipeEventAgentProof and applyPipeResult both demand
+// created == proof.Timestamp and an expires that is exactly a supported reply
+// window). Deriving it from the signed proof keeps both sides in agreement by
+// construction, whatever the local retention state is.
+//
+// A row that already carries one of the supported windows keeps its value: that
+// is how the one-shot downgrade to the legacy window, for destinations older
+// than the current one, reaches the wire. Any other stored value — a retention
+// re-stamp, for instance — is replaced by the current window.
+func resultEnvelopeLifetime(proof store.PipelineAgentProof, stored time.Time) (created, expires time.Time) {
 	created = time.Unix(proof.Timestamp, 0).UTC()
-	return created, created.Add(pipeEventResultLifetime)
+	if acceptedResultLifetime(created, stored) {
+		return created, stored
+	}
+	return created, created.Add(PipeEventResultLifetime)
+}
+
+// resultEnvelopeProofProblem reports why a destination could refuse this result
+// envelope's proof. The result bytes are attached only at push time, so they are
+// deliberately not part of this check.
+func resultEnvelopeProofProblem(event *PipeEvent) error {
+	method, path, body, err := verifyPipelineAgentProof(event.Proof)
+	if err != nil {
+		return err
+	}
+	if method != http.MethodPut || path != "/v1/pipe/"+event.SourcePipeID+"/result" {
+		return fmt.Errorf("result proof does not authorize %s %s", method, path)
+	}
+	var signed signedPipeResultRequest
+	if err := decodeStrictPipeJSON(body, &signed); err != nil {
+		return fmt.Errorf("decode signed pipe result: %w", err)
+	}
+	if signed.SourcePipeID != event.OriginEventID || signed.SourceChainID != event.SourceChainID {
+		return errors.New("signed result request does not bind this origin and chain")
+	}
+	return nil
 }
 
 func (m *Manager) sourceMayUseFederatedPipe(agentID string) bool {

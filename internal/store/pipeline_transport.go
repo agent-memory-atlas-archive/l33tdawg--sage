@@ -738,6 +738,25 @@ func (s *SQLiteStore) RecordPipelineTransportFailure(ctx context.Context, eventI
 	})
 }
 
+// DowngradeFederatedResultLifetime narrows one pending result row to the legacy
+// reply window so its next attempt can satisfy a destination that predates
+// federation.PipeEventResultLifetime. It reports false when the row is already
+// at the legacy window (or is no longer pending), which is how the delivery loop
+// knows that a second refusal is terminal. The legacy value is spelled out in
+// SQL because this package cannot import the federation constants; keep it in
+// step with legacyPipeEventResultLifetime.
+func (s *SQLiteStore) DowngradeFederatedResultLifetime(ctx context.Context, eventID string) (bool, error) {
+	res, err := s.writeExecContext(ctx, `UPDATE pipeline_transport_outbox
+		SET expires_at=strftime('%Y-%m-%dT%H:%M:%fZ',created_at,'+24 hours')
+		WHERE event_id=? AND event_kind='result' AND state='pending'
+		  AND strftime('%s',expires_at)>strftime('%s',created_at,'+24 hours')`, eventID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
 // ListPipelineDeliveryUpdates atomically claims payload-free terminal notices
 // for the local agent that signed the transport event. A failed result event
 // belongs to its local completer even though the imported pipeline row is

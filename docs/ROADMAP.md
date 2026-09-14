@@ -215,6 +215,9 @@ tickets; already-queued events preserve their original authorization mode.
 Session-bound MCP replies now pass strict peer proof decoding, and retries report
 retained delivery state and untrusted diagnostics without silently requeuing
 failed events.
+Federated replies also stay deliverable for seven days after their signed proof
+instead of one, and a destination that predates the longer window is handled by a
+one-shot retry at the legacy 24-hour window rather than a terminal failure.
 
 No consensus-rule or application-version change; app-v27 remains the ceiling.
 

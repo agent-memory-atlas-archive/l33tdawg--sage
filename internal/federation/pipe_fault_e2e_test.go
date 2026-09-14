@@ -299,7 +299,7 @@ func exercisePipeDisconnectRestart(t *testing.T, source, destination *testChain,
 		AuthorizationMode: imported.FederationAuthorizationMode,
 		ContactRevision:   imported.FederationContactRevision, SourceAgentID: fixture.targetAgent,
 		TargetAgentID: fixture.sourceAgent, Proof: resultProof, CreatedAt: now,
-		ExpiresAt: now.Add(pipeEventResultLifetime),
+		ExpiresAt: now.Add(PipeEventResultLifetime),
 	}
 	_, err = pipeSQLite(t, destination).BindFederatedMessageClaimSession(ctx, fixture.targetAgent, imported.PipeID, "mcp-real-peer-reply")
 	require.NoError(t, err)

@@ -2486,6 +2486,14 @@ That ID names the already-existing signed result outbox
 event; it does not create a duplicate message. Only its signing replier can use
 the reply-status route, and unrelated/missing IDs share the same generic 404.
 
+A federated reply stays deliverable for seven days after the proof that signs it
+(`federation.PipeEventResultLifetime`), which is also its retained outbox
+deadline. The destination re-derives that window from the signed proof and admits
+the legacy 24-hour window as well, so a peer that has not adopted the longer one
+can still return results. If a destination refuses a reply with the generic
+`invalid pipeline agent proof` refusal, the sender narrows that one pending event
+to the legacy window and retries once before reporting a terminal failure.
+
 The canonical same-node Messages routes remain separate from the
 capability-gated federated receipt-v2 surface. A negotiated imported pipe adds
 these payload-free routes:

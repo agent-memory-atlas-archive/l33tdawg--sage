@@ -39,7 +39,7 @@ func transportOutboxExpiry(t *testing.T, s *SQLiteStore, eventID string) string 
 // every 'msg-%' row. An imported federated message gets a receiver-local id of
 // the form msg-fed-…, so its RESULT row was extended too — and a destination
 // re-derives a result event's lifetime from the signed proof as exactly 24h
-// (federation.pipeEventResultLifetime), rejecting anything else as an invalid
+// (federation.PipeEventResultLifetime), rejecting anything else as an invalid
 // pipeline agent proof. Because expires_at is also the retry deadline, the
 // extension additionally removed the give-up path that would have surfaced the
 // loss to the local agent.
@@ -66,7 +66,7 @@ func TestTransportRetentionMigrationExtendsSendsButNotForeignResults(t *testing.
 		EventKind: "result", PolicyEpoch: "epoch-1", AgreementID: strings.Repeat("a", 64),
 		ContactID: strings.Repeat("b", 64), ContactRevision: strings.Repeat("c", 64),
 		SourceAgentID: resultProof.AgentID, TargetAgentID: strings.Repeat("d", 64), Proof: resultProof,
-		CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour),
+		CreatedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour),
 	}
 	require.NoError(t, s.insertPipelineTransport(ctx, result))
 	require.NoError(t, s.Close())
@@ -80,7 +80,7 @@ func TestTransportRetentionMigrationExtendsSendsButNotForeignResults(t *testing.
 	require.Equal(t, now.Add(CanonicalMessageLifetime).Unix(),
 		parseTime(transportOutboxExpiry(t, reopened, send.EventID)).Unix(),
 		"a pending canonical send must still be rescued onto the durable sentinel")
-	require.Equal(t, now.Add(24*time.Hour).Unix(),
+	require.Equal(t, now.Add(7*24*time.Hour).Unix(),
 		parseTime(transportOutboxExpiry(t, reopened, result.EventID)).Unix(),
 		"a foreign result must keep the protocol lifetime its destination re-derives from the proof")
 }
@@ -111,9 +111,42 @@ func TestTransportRetentionMigrationRepairsAlreadyExtendedForeignResult(t *testi
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, reopened.Close()) })
 
-	require.Equal(t, now.Add(24*time.Hour).Unix(),
+	require.Equal(t, now.Add(7*24*time.Hour).Unix(),
 		parseTime(transportOutboxExpiry(t, reopened, result.EventID)).Unix(),
-		"an already-extended result row must be restored to the protocol lifetime")
+		"an already-extended result row must be restored to a supported reply window")
+}
+
+// A destination that predates the current reply window answers 400 once per
+// proof, and the delivery loop narrows the row to the legacy window so the next
+// attempt can still land. The downgrade is one-shot: once the row carries the
+// legacy value there is nothing left to narrow, so a second refusal terminalizes
+// through the ordinary failure path.
+func TestDowngradeFederatedResultLifetimeNarrowsOnceAndThenReportsDone(t *testing.T) {
+	ctx := context.Background()
+	s, err := NewSQLiteStore(ctx, ":memory:")
+	require.NoError(t, err)
+	defer s.Close()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	proof := testPipelineTransportProof(t)
+	event := &PipelineTransportOutbox{
+		EventID: "event-downgrade", PipeID: "msg-fed-downgrade", RemoteChainID: "chain-peer",
+		EventKind: "result", PolicyEpoch: "epoch-1", AgreementID: strings.Repeat("a", 64),
+		ContactID: strings.Repeat("b", 64), ContactRevision: strings.Repeat("c", 64),
+		SourceAgentID: proof.AgentID, TargetAgentID: strings.Repeat("d", 64), Proof: proof,
+		CreatedAt: now, ExpiresAt: now.Add(7 * 24 * time.Hour),
+	}
+	require.NoError(t, s.insertPipelineTransport(ctx, event))
+
+	downgraded, err := s.DowngradeFederatedResultLifetime(ctx, event.EventID)
+	require.NoError(t, err)
+	require.True(t, downgraded, "the first refusal narrows the row to the legacy window")
+	require.Equal(t, now.Add(24*time.Hour).Unix(),
+		parseTime(transportOutboxExpiry(t, s, event.EventID)).Unix())
+
+	downgraded, err = s.DowngradeFederatedResultLifetime(ctx, event.EventID)
+	require.NoError(t, err)
+	require.False(t, downgraded, "a second refusal must not narrow an already-legacy row")
 }
 
 func TestInsertPipelineWithTransportIsAtomicAndVaultEncryptsProof(t *testing.T) {
