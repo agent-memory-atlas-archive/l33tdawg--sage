@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.19.22`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.0`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,22 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.20.0
+
+**An agent's working state can now be stored encrypted on the node.** Two new surfaces are reachable only from inside the app-v23 pipeline agent boundary, and both refuse to run without the Synaptic Ledger vault: `PUT`/`GET /v1/private-media/{uuid}` stores immutable JPEG originals with ciphertext-only rows, per-caller actor isolation, quota enforcement and a startup disk-floor probe, and `PUT`/`GET /v1/workflows[/{uuid}]` gives an agent an encrypted, actor-bound journal for long-running work with compare-and-swap revisions, strict argument bounds and an opt-out conversation guard. Neither surface can be reached for another agent's rows, and neither writes a plaintext copy to the database or its WAL.
+
+**You can now prove whether message storage is encrypted.** `GET /v1/messages/storage` reports the honest storage posture of this node, and `POST /v1/messages` accepts a strict signed `require_encrypted_storage` boolean: an agent that must not be stored in the clear now gets a `503` instead of a silent downgrade, and a malformed or unsigned value is rejected rather than ignored. The authenticated request-body limit became route-aware for exactly one route: a canonical-UUID private-media `PUT` gets one extra MiB, everything else keeps the 1 MiB ceiling.
+
+**Local durability is no longer taken on faith.** SQLite opens with `synchronous=FULL` in both DSN and `PRAGMA` form and the node verifies `journal_mode` and `synchronous` at boot, refusing to serve when the durability posture is not provable. Vault publication is atomic in the same vein: attaching a vault and marking encryption required can no longer be observed separately, so an unlock cannot leave a window where a write is accepted against a store that does not yet require encryption.
+
+**Lantern bring-up support.** `sage-gui init-lantern-private` creates a fresh-only hardware identity — it refuses an existing or mismatched node rather than reusing it, takes its companion-key bootstrap explicitly, and never installs services or enables public enrollment. A `SAGE_LANTERN_PRIVATE_LISTENERS` node treats a missing config as an error instead of a default, and the policy is re-checked when the YAML is loaded so an edit cannot silently weaken it.
+
+**A public-memory Merkle index ships dormant, and no fork is opened.** The sparse SHA-256 index over committed `PUBLIC=0` records, its migration builder and its stage/promote path are in the tree with their tests, and no production code calls any of them. Staged rows live under a local namespace that is excluded from the AppHash; promotion is what writes into AppHash-covered state, it is explicitly named for app-v28, and it is not reachable from a running node. Read that as preparation, not as activation.
+
+No consensus change or chain migration; app-v27 remains the ceiling.
+
+Container: `ghcr.io/l33tdawg/sage:11.20.0`. SDK 11.20.0.
 
 ## What's New in v11.19.22
 

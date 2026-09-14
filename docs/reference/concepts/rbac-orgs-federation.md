@@ -1,8 +1,8 @@
-<!-- Core document reconciled through SAGE v11.19.22/app-v27, including consensus-backed Access Group authority, Root continuity, linked federated readers, and the quorum/state-sync/governance-gateway sections. -->
+<!-- Core document reconciled through SAGE v11.20.0/app-v27, including consensus-backed Access Group authority, Root continuity, linked federated readers, and the quorum/state-sync/governance-gateway sections. -->
 
 # RBAC, Organizations, and Federation
 
-Verified against SAGE v11.19.22. Legacy organization/federation sections retain
+Verified against SAGE v11.20.0. Legacy organization/federation sections retain
 their historical context; app-v23 roles, Root, Access Groups, and app-v25
 historical writer continuity are the current local-control model.
 
@@ -503,7 +503,7 @@ The `FederationID` is deterministic: computed from the two org IDs + height to a
 
 ### MaxClearance Cap
 
-`checkFederationAccess` (`badger.go:6421-6501`) enforces: `if memoryClassification > maxClearance → deny`. This means a federation with `max_clearance=1` (INTERNAL) cannot expose CONFIDENTIAL (2) or higher memories to the federated org, regardless of the individual agent's clearance within their own org.
+`checkFederationAccess` (`badger.go:6428-6508`) enforces: `if memoryClassification > maxClearance → deny`. This means a federation with `max_clearance=1` (INTERNAL) cannot expose CONFIDENTIAL (2) or higher memories to the federated org, regardless of the individual agent's clearance within their own org.
 
 Every proposal remains `"proposed"` until an explicit target-organization
 approval changes it to `"active"`, regardless of the stored
