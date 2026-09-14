@@ -663,12 +663,10 @@ class WorkflowJournalPage(_WorkflowWireModel):
         return self
 
 
-class MessageStorageStatus(BaseModel):
+class MessageStorageStatus(_WorkflowWireModel):
     """Strict storage evidence, not an authorization or activation decision."""
 
-    model_config = ConfigDict(strict=True, extra="forbid")
-
-    schema: Literal["sage.message-storage.v1"]
+    schema_: Literal["sage.message-storage.v1"] = Field(alias="schema")
     instance_id: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     agent_id: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     encryption_expected: bool
