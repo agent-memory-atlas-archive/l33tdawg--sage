@@ -5641,7 +5641,11 @@ func (s *SQLiteStore) GetOpenTasks(ctx context.Context, domain string, provider 
 		query += ` AND (provider = ? OR provider = '')`
 		args = append(args, provider)
 	}
-	query += ` ORDER BY created_at DESC LIMIT 500`
+	// memory_id is the tiebreaker, not decoration: created_at has second
+	// resolution, so a burst of tasks created in the same second would otherwise
+	// come back in an unstable order and any offset-based paging over that list
+	// could skip or repeat rows between pages.
+	query += ` ORDER BY created_at DESC, memory_id ASC LIMIT 500`
 
 	rows, err := s.conn.QueryContext(ctx, query, args...)
 	if err != nil {

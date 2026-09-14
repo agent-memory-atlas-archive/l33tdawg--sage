@@ -6411,3 +6411,144 @@ func TestSageTurnRelaysIndexStatusOnEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "incomplete", result.(map[string]any)["index_status"], "an empty turn recall must still relay index_status")
 }
+
+// backlogTestServer stubs the ordinary-agent open-task endpoint. Tasks are
+// returned in the node's documented order (created_at DESC, then memory_id), and
+// the stub can advertise a scan cap so the tool's honest-truncation contract is
+// exercised without a 500-task fixture.
+func backlogTestServer(t *testing.T, scanCapped bool) (*Server, *[]map[string]any, *[]string) {
+	t.Helper()
+	var (
+		tasks        []map[string]any
+		updatedPaths []string
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/memory/tasks", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		domain := r.URL.Query().Get("domain")
+		visible := make([]map[string]any, 0, len(tasks))
+		for _, task := range tasks {
+			if (domain == "" || task["domain_tag"] == domain) &&
+				task["assignee"] == r.Header.Get("X-Agent-ID") {
+				visible = append(visible, task)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tasks": visible, "total": len(visible), "returned": len(visible),
+			"scan_capped": scanCapped,
+		})
+	})
+	mux.HandleFunc("/v1/memory/", func(w http.ResponseWriter, r *http.Request) {
+		updatedPaths = append(updatedPaths, r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	_, priv, _ := ed25519.GenerateKey(nil)
+	return NewServer(ts.URL, priv), &tasks, &updatedPaths
+}
+
+func backlogFixtureTasks(t *testing.T, s *Server, ids []string) []map[string]any {
+	t.Helper()
+	out := make([]map[string]any, 0, len(ids))
+	for index, id := range ids {
+		out = append(out, map[string]any{
+			"memory_id": id, "content": fmt.Sprintf("task %d", index),
+			"domain_tag": "sage-development", "task_status": "planned",
+			"assignee": s.agentID, "created_at": fmt.Sprintf("2026-09-14T0%d:00:00Z", index),
+		})
+	}
+	return out
+}
+
+func TestSageBacklogIsPagedAndReportsTheTrueTotal(t *testing.T) {
+	ctx := context.Background()
+	ids := []string{
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222",
+		"33333333-3333-4333-8333-333333333333",
+		"44444444-4444-4444-8444-444444444444",
+		"55555555-5555-4555-8555-555555555555",
+	}
+	s, tasks, _ := backlogTestServer(t, false)
+	*tasks = backlogFixtureTasks(t, s, ids)
+
+	seen := make([]string, 0, len(ids))
+	offset := 0
+	for page := 0; page < len(ids); page++ {
+		result, err := s.toolBacklog(ctx, map[string]any{"limit": 2, "offset": offset})
+		require.NoError(t, err)
+		backlog := result.(map[string]any)
+		require.Equal(t, len(ids), backlog["total_open"], "the true board size must not be reduced to the page size")
+		require.Equal(t, 2, backlog["limit"])
+		require.Equal(t, offset, backlog["offset"])
+		pageTasks := 0
+		for _, group := range backlog["tasks_by_domain"].(map[string][]map[string]any) {
+			for _, task := range group {
+				seen = append(seen, task["memory_id"].(string))
+				pageTasks++
+			}
+		}
+		require.Equal(t, backlog["returned"], pageTasks)
+		if offset+pageTasks < len(ids) {
+			require.Equal(t, true, backlog["has_more"])
+			next, ok := backlog["next_offset"]
+			require.True(t, ok, "a partial page must hand back the next offset")
+			offset = next.(int)
+			continue
+		}
+		require.Equal(t, false, backlog["has_more"])
+		require.NotContains(t, backlog, "next_offset")
+		break
+	}
+	require.Equal(t, len(ids), len(seen), "paging must enumerate the whole board")
+	require.ElementsMatch(t, ids, seen, "pages must not skip or repeat tasks")
+}
+
+func TestSageBacklogSurfacesTheNodeScanCap(t *testing.T) {
+	ctx := context.Background()
+	s, tasks, _ := backlogTestServer(t, true)
+	*tasks = backlogFixtureTasks(t, s, []string{"11111111-1111-4111-8111-111111111111"})
+
+	result, err := s.toolBacklog(ctx, map[string]any{})
+	require.NoError(t, err)
+	backlog := result.(map[string]any)
+	require.Equal(t, true, backlog["scan_capped"],
+		"a bounded scan must be visible to the caller instead of looking like a complete board")
+	require.Contains(t, backlog["message"], "narrow by domain")
+}
+
+func TestSageTaskClosesAnOpenTaskByUniqueIDPrefix(t *testing.T) {
+	ctx := context.Background()
+	s, tasks, updated := backlogTestServer(t, false)
+	full := "9f3c1a77-2b64-4f0e-9a11-5c7d2e8b4f60"
+	*tasks = backlogFixtureTasks(t, s, []string{full, "ab12cd34-0000-4000-8000-000000000000"})
+
+	result, err := s.toolTask(ctx, map[string]any{
+		"memory_id": "9f3c1a77", "status": "done",
+	})
+	require.NoError(t, err)
+	update := result.(map[string]any)
+	require.Equal(t, "updated", update["action"])
+	require.Equal(t, full, update["memory_id"], "the prefix must resolve to the full id before mutation")
+	require.Equal(t, "9f3c1a77", update["resolved_from_prefix"])
+	require.Equal(t, []string{"/v1/memory/" + full + "/task-status"}, *updated,
+		"the mutation must target the resolved full id, never the prefix")
+}
+
+func TestSageTaskRejectsAmbiguousAndShortIDPrefixes(t *testing.T) {
+	ctx := context.Background()
+	s, tasks, updated := backlogTestServer(t, false)
+	first := "ab12cd34-1111-4111-8111-111111111111"
+	second := "ab12cd34-2222-4222-8222-222222222222"
+	*tasks = backlogFixtureTasks(t, s, []string{first, second})
+
+	_, err := s.toolTask(ctx, map[string]any{"memory_id": "ab12cd34", "status": "done"})
+	require.Error(t, err)
+	require.ErrorContains(t, err, first)
+	require.ErrorContains(t, err, second)
+
+	_, err = s.toolTask(ctx, map[string]any{"memory_id": "ab12", "status": "done"})
+	require.ErrorContains(t, err, "at least 8 characters")
+	require.Empty(t, *updated, "no mutation may be attempted for an unresolved prefix")
+}

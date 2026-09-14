@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
 	"time"
 	"unicode"
 
@@ -245,7 +246,7 @@ func (s *Server) registerTools() map[string]Tool {
 				"properties": map[string]any{
 					"content":         map[string]any{"type": "string", "description": "Task description (for creating new tasks)"},
 					"domain":          map[string]any{"type": "string", "description": "Domain tag for the task. Omit to use your approved app-v23 owned home domain (legacy nodes use general). Explicit values are never silently remapped."},
-					"memory_id":       map[string]any{"type": "string", "description": "Existing task memory ID (for updates)"},
+					"memory_id":       map[string]any{"type": "string", "description": "Existing task memory ID (for updates). A unique prefix of at least 8 characters is accepted and resolved against this agent's open tasks, so a predecessor named only by prefix in an older entry can be closed directly; an ambiguous prefix returns an error naming the matches."},
 					"status":          map[string]any{"type": "string", "enum": []string{"planned", "in_progress", "done", "dropped"}, "description": "Task status. New tasks default to planned; existing tasks require an explicit mutable status."},
 					"link_to":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 20, "description": "Memory IDs to link this task to (max: 20)"},
 					"idempotency_key": map[string]any{"type": "string", "description": "Optional permanent creation identity. Omit to derive one deterministically from the caller, resolved domain, and canonical task content; every later identical call returns that existing task even after it is done or dropped. Supply a new explicit key only when intentionally creating another task with the same content and domain."},
@@ -256,11 +257,15 @@ func (s *Server) registerTools() map[string]Tool {
 		"sage_backlog": {
 			Name: "sage_backlog",
 			Description: "View open tasks explicitly assigned to this agent ID across domains. Unassigned and other agents' work is never returned. " +
-				"Use this to see what's been discussed but not yet done, review priorities, and avoid losing track of ideas across sessions.",
+				"Use this to see what's been discussed but not yet done, review priorities, and avoid losing track of ideas across sessions. " +
+				"This listing is PAGED: one call is never the whole board. Read `total_open`, `returned`, `has_more` and `next_offset`, and page with `offset` until has_more is false before claiming you have seen every task. " +
+				"`scan_capped` means the node stopped scanning at its bound, so narrow by domain or provider to see the remainder.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"domain": map[string]any{"type": "string", "description": "Filter by domain (omit for all domains)"},
+					"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "description": "Tasks per page (default 25, maximum 100)."},
+					"offset": map[string]any{"type": "integer", "minimum": 0, "description": "Zero-based offset into the same stable order (created_at DESC, then memory_id). Pass the previous page's next_offset."},
 				},
 			},
 			Handler: s.toolBacklog,
@@ -3764,7 +3769,7 @@ type taskSubmitResponse struct {
 // assignedTasks uses the ordinary-agent endpoint. The dashboard task API is a
 // local-human CEREBRUM surface after app-v23 and deliberately rejects signed
 // remote agents, even when that same agent owns the task.
-func (s *Server) assignedTasks(ctx context.Context, domain string) ([]assignedTask, error) {
+func (s *Server) assignedTasks(ctx context.Context, domain string) ([]assignedTask, bool, error) {
 	q := url.Values{}
 	if domain != "" {
 		q.Set("domain", domain)
@@ -3775,17 +3780,107 @@ func (s *Server) assignedTasks(ctx context.Context, domain string) ([]assignedTa
 
 	path := "/v1/memory/tasks?" + q.Encode()
 	var response struct {
-		Tasks []assignedTask `json:"tasks"`
-		Total int            `json:"total"`
+		Tasks      []assignedTask `json:"tasks"`
+		Total      int            `json:"total"`
+		Returned   int            `json:"returned"`
+		ScanCapped bool           `json:"scan_capped"`
 	}
 	if err := s.doSignedJSON(ctx, "GET", path, nil, &response); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return response.Tasks, nil
+	// Older nodes omit scan_capped entirely, in which case the response is
+	// treated as complete — which is exactly what those nodes mean by it.
+	return response.Tasks, response.ScanCapped, nil
+}
+
+// minTaskIDPrefix is the shortest memory-id prefix resolved to a full id.
+// Backlogs and handovers routinely name a predecessor by an 8-character prefix
+// ("superseded by 958760b4"), but every mutation path needs the full id — so an
+// agent could see exactly which task to close and still have no way to close it.
+// Resolution stays conservative: only OPEN tasks assigned to this exact agent
+// are candidates, and an ambiguous prefix resolves to an error naming the
+// matches rather than to a coin flip.
+const minTaskIDPrefix = 8
+
+func (s *Server) resolveAssignedTaskIDPrefix(ctx context.Context, prefix string) (string, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(prefix))
+	if len(trimmed) < minTaskIDPrefix {
+		return "", fmt.Errorf("memory_id prefix must be at least %d characters; pass the full id or a longer prefix", minTaskIDPrefix)
+	}
+	if strings.ContainsAny(trimmed, " \t\n") {
+		return "", fmt.Errorf("memory_id prefix must not contain whitespace")
+	}
+	tasks, _, err := s.assignedTasks(ctx, "")
+	if err != nil {
+		return "", fmt.Errorf("resolve memory_id prefix: %w", err)
+	}
+	effectiveID := s.effectiveAgentID(ctx)
+	matches := make([]assignedTask, 0, 2)
+	for _, t := range tasks {
+		if t.Assignee != effectiveID {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(t.MemoryID), trimmed) {
+			matches = append(matches, t)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no open task assigned to this agent matches prefix %q; call sage_backlog to list the exact ids", prefix)
+	case 1:
+		return matches[0].MemoryID, nil
+	default:
+		described := make([]string, 0, len(matches))
+		for _, t := range matches {
+			described = append(described, fmt.Sprintf("%s (%s)", t.MemoryID, taskContentPreview(t.Content, 60)))
+		}
+		return "", fmt.Errorf("prefix %q matches %d open tasks; pass the full memory_id of the one you mean: %s",
+			prefix, len(matches), strings.Join(described, "; "))
+	}
+}
+
+func taskContentPreview(content string, limit int) string {
+	flat := strings.Join(strings.Fields(content), " ")
+	if len(flat) <= limit {
+		return flat
+	}
+	return flat[:limit] + "…"
+}
+
+// isTaskIDPrefixCandidate reports whether id could be a truncated memory id.
+// Memory ids are UUIDs, so anything that is not 8..35 hex-or-dash characters —
+// a hand-written label, a legacy fixture id, or an already-complete id — is
+// passed through untouched and the server's own validation stays authoritative.
+// This also keeps a typo from turning into a network lookup.
+// isTaskIDShape reports whether a value is even shaped like a memory-id prefix
+// (hex digits and dashes only).
+func isTaskIDShape(trimmed string) bool {
+	for _, r := range trimmed {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isTaskIDPrefixCandidate(id string) bool {
+	trimmed := strings.TrimSpace(id)
+	return len(trimmed) >= minTaskIDPrefix && len(trimmed) < 36 && isTaskIDShape(trimmed)
+}
+
+// isShortTaskIDPrefix catches the other half of the same typo: an id-shaped
+// value too short to resolve. Forwarding it would produce a bare 404 from the
+// server instead of naming the problem.
+func isShortTaskIDPrefix(id string) bool {
+	trimmed := strings.TrimSpace(id)
+	return len(trimmed) > 0 && len(trimmed) < minTaskIDPrefix && isTaskIDShape(trimmed)
 }
 
 func (s *Server) toolTask(ctx context.Context, params map[string]any) (any, error) {
 	memoryID := stringParam(params, "memory_id", "")
+	requestedID := memoryID
 	content := stringParam(params, "content", "")
 	domain := ""
 	status, statusProvided := params["status"].(string)
@@ -3811,6 +3906,17 @@ func (s *Server) toolTask(ctx context.Context, params map[string]any) (any, erro
 	result := map[string]any{}
 
 	if memoryID != "" {
+		if isShortTaskIDPrefix(memoryID) {
+			return nil, fmt.Errorf("memory_id prefix must be at least %d characters; pass the full id or a longer prefix", minTaskIDPrefix)
+		}
+		if isTaskIDPrefixCandidate(memoryID) {
+			resolved, resolveErr := s.resolveAssignedTaskIDPrefix(ctx, memoryID)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			memoryID = resolved
+			result["resolved_from_prefix"] = requestedID
+		}
 		if content != "" {
 			return nil, fmt.Errorf("task content is immutable after creation; omit content and provide an explicit status or link_to")
 		}
@@ -3957,7 +4063,7 @@ func (s *Server) toolTask(ctx context.Context, params map[string]any) (any, erro
 					return nil, fmt.Errorf("start newly created task: %w", err)
 				}
 			}
-			assigned, err := s.assignedTasks(ctx, domain)
+			assigned, _, err := s.assignedTasks(ctx, domain)
 			if err != nil {
 				return nil, fmt.Errorf(
 					"task %s committed but assigned-task readback failed: %w",
@@ -4042,24 +4148,70 @@ func (s *Server) toolTask(ctx context.Context, params map[string]any) (any, erro
 	return result, nil
 }
 
+// backlogPageDefault/Max bound one backlog response. Before paging existed this
+// tool returned the whole board in a single payload: with a few dozen tasks
+// carrying multi-kilobyte content the client truncated the middle of the JSON
+// to fit, and because the order is stable the SAME slice disappeared on every
+// call — so a partial board read as a complete one and the count disagreed with
+// the listing with nothing in the response to explain why.
+const (
+	backlogPageDefault = 25
+	backlogPageMax     = 100
+)
+
 func (s *Server) toolBacklog(ctx context.Context, params map[string]any) (any, error) {
 	domain := stringParam(params, "domain", "")
-	tasks, err := s.assignedTasks(ctx, domain)
+	limit := intParam(params, "limit", backlogPageDefault)
+	if limit <= 0 {
+		limit = backlogPageDefault
+	}
+	if limit > backlogPageMax {
+		limit = backlogPageMax
+	}
+	offset := intParam(params, "offset", 0)
+	if offset < 0 {
+		return nil, fmt.Errorf("offset must not be negative")
+	}
+
+	tasks, scanCapped, err := s.assignedTasks(ctx, domain)
 	if err != nil {
 		return nil, fmt.Errorf("get backlog: %w", err)
 	}
 
-	// Group by domain
-	byDomain := map[string][]map[string]any{}
-	visibleTotal := 0
+	// Exact-assignee isolation, then a deterministic page over the resulting
+	// order. The server orders by created_at DESC with an id tiebreaker, so
+	// offset paging cannot skip or repeat a task between calls.
 	effectiveID := s.effectiveAgentID(ctx)
+	visible := make([]assignedTask, 0, len(tasks))
 	for _, t := range tasks {
 		// Defense in depth for mixed-version deployments: the signed agent may
 		// only receive work explicitly assigned to its immutable agent ID.
 		if t.Assignee != effectiveID {
 			continue
 		}
-		visibleTotal++
+		visible = append(visible, t)
+	}
+	// total_open counts what THIS agent can enumerate, not what the node
+	// returned: a mixed-version node can hand back rows assigned to another
+	// identity, and those must never inflate the caller's own board size. The
+	// node-side bound is reported separately as scan_capped.
+	visibleTotal := len(visible)
+
+	page := visible
+	if offset >= len(visible) {
+		page = nil
+	} else {
+		end := offset + limit
+		if end > len(visible) {
+			end = len(visible)
+		}
+		page = visible[offset:end]
+	}
+
+	// Group by domain. Domains are reported for the page; the per-domain counts
+	// of the whole board are what tell a caller where to narrow next.
+	byDomain := map[string][]map[string]any{}
+	for _, t := range page {
 		byDomain[t.DomainTag] = append(byDomain[t.DomainTag], map[string]any{
 			"memory_id":         t.MemoryID,
 			"content":           t.Content,
@@ -4073,11 +4225,42 @@ func (s *Server) toolBacklog(ctx context.Context, params map[string]any) (any, e
 		})
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"tasks_by_domain": byDomain,
 		"total_open":      visibleTotal,
-		"message":         fmt.Sprintf("You have %d assigned open tasks across %d domains.", visibleTotal, len(byDomain)),
-	}, nil
+		"returned":        len(page),
+		"offset":          offset,
+		"limit":           limit,
+		"has_more":        offset+len(page) < len(visible),
+	}
+	if scanCapped {
+		result["scan_capped"] = true
+	}
+	if len(page) > 0 && offset+len(page) < len(visible) {
+		result["next_offset"] = offset + len(page)
+	}
+
+	switch {
+	case visibleTotal == 0:
+		result["message"] = "No open tasks are assigned to you."
+	case len(page) == 0:
+		result["message"] = fmt.Sprintf(
+			"Offset %d is past the end of your %d open tasks.", offset, visibleTotal)
+	default:
+		shown := offset + len(page)
+		result["message"] = fmt.Sprintf(
+			"Showing %d of %d assigned open tasks (offset %d).", len(page), visibleTotal, offset)
+		if shown < len(visible) {
+			result["message"] = fmt.Sprintf(
+				"Showing %d of %d assigned open tasks (offset %d). Call again with offset=%d for the rest; this tool is paged, so a single call is never the whole board.",
+				len(page), visibleTotal, offset, shown)
+		}
+		if scanCapped {
+			result["message"] = fmt.Sprintf("%v The node stopped scanning at its bound, so narrow by domain or provider to see the remainder.",
+				result["message"])
+		}
+	}
+	return result, nil
 }
 
 func (s *Server) toolRegister(ctx context.Context, params map[string]any) (any, error) {

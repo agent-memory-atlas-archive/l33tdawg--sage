@@ -4099,6 +4099,13 @@ func containsAgentID(agentIDs []string, target string) bool {
 	return false
 }
 
+// openTaskVisibleLimit bounds one open-task collection pass. It is a scan
+// budget, not a total: when a caller's board is larger than this the response
+// must SAY it stopped early (scan_capped) instead of presenting a truncated
+// board as the whole board. A caller that needs the rest narrows by domain or
+// provider.
+const openTaskVisibleLimit = 500
+
 // handleGetOpenTasks handles GET /v1/memory/tasks.
 func (s *Server) handleGetOpenTasks(w http.ResponseWriter, r *http.Request) {
 	domain := r.URL.Query().Get("domain")
@@ -4142,7 +4149,7 @@ func (s *Server) handleGetOpenTasks(w http.ResponseWriter, r *http.Request) {
 	if s.isPostV23ForNextTx() {
 		if pager, ok := s.store.(store.OpenTaskPageStore); ok {
 			tasks, err = s.collectAppV23VisibleRecords(
-				r.Context(), agentID, 500,
+				r.Context(), agentID, openTaskVisibleLimit,
 				func(ctx context.Context, limit, offset int) ([]*memory.MemoryRecord, error) {
 					return pager.GetOpenTasksPage(
 						ctx, domain, provider, agentID, limit, offset,
@@ -4254,9 +4261,15 @@ func (s *Server) handleGetOpenTasks(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// `total` remains the returned count for backward compatibility. The two new
+	// fields are what let a client tell a complete board from a bounded one:
+	// without them @sage_backlog could only present whatever arrived, which is
+	// how a truncated board came to look like an authoritative one.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tasks": results,
-		"total": len(results),
+		"tasks":       results,
+		"total":       len(results),
+		"returned":    len(results),
+		"scan_capped": len(tasks) >= openTaskVisibleLimit,
 	})
 }
 
