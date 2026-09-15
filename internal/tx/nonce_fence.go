@@ -391,6 +391,37 @@ func Indeterminate(err error, encoded []byte, resolve TxResolveFunc) error {
 	}
 }
 
+// IndeterminateDetails reports the identity of the exact transaction an
+// indeterminate submit put on the wire: its CometBFT hash, uppercase hex, and
+// — when the bytes still decode — the nonce it was signed with.
+//
+// This is the read side of Indeterminate for HTTP surfaces, and it exists
+// because those surfaces previously had only the error text. An ambiguous
+// outcome collapsed into the same opaque 500 as a genuine internal fault, so a
+// caller could not tell "your write may already be committed" from "your write
+// never happened", and the observed consequence in the field was a caller
+// re-signing a claim that had already committed. The caller's only safe next
+// step is to look the transaction up by hash, which it cannot do unless we hand
+// over the hash we already hold.
+//
+// The format matches what FencedSigners reports and what /tx?hash= accepts, so
+// one hash identifies the transaction on every surface. Nothing secret crosses
+// this boundary: the hash and the nonce both travel in the clear and end up
+// on-chain.
+//
+// ok is false when err is not an indeterminate submit, or when it carries no
+// encoded transaction. A fence raised without bytes can never be proven, so
+// there is genuinely no hash to report.
+func IndeterminateDetails(err error) (hash string, nonce uint64, hasNonce bool, ok bool) {
+	var ind *indeterminateSubmit
+	if !errors.As(err, &ind) || len(ind.encoded) == 0 {
+		return "", 0, false, false
+	}
+	sum := CometTxHash(ind.encoded)
+	nonce, hasNonce = fencedTxNonce(ind.encoded)
+	return strings.ToUpper(hex.EncodeToString(sum[:])), nonce, hasNonce, true
+}
+
 // fenceCause is the ONLY thing a fence keeps about the error that raised it: a
 // category, never the message.
 //

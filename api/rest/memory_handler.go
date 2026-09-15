@@ -1527,6 +1527,15 @@ func (s *Server) handleSubmitMemory(w http.ResponseWriter, r *http.Request) {
 			writeEffectiveWriteDenial(w, denial)
 			return
 		}
+		// Above app-v23 there is no idempotency key to replay, and below it the
+		// replay may have proved nothing. What remains after every definitive
+		// verdict is either an ambiguous outcome — reported as ambiguous, with
+		// the exact transaction hash, instead of as a 500 a caller can only
+		// answer by re-signing work that may already be committed — or a
+		// genuine fault that keeps its opaque mapping.
+		if writeIndeterminateBroadcast(w, err) {
+			return
+		}
 		status, publicMsg := broadcastErrorPublic(err)
 		writeProblem(w, status, "Broadcast error", publicMsg)
 		return

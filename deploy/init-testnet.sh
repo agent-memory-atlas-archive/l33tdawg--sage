@@ -39,6 +39,21 @@ fi
 AMID_UID="${AMID_UID:-100}"
 AMID_GID="${AMID_GID:-101}"
 
+# How long each CometBFT node keeps a /broadcast_tx_commit caller waiting for
+# the transaction to be included in a block.
+#
+# Upstream defaults this to 10s, which is close enough to a loaded cluster's
+# block cadence to expire BEFORE the block lands: the tx then commits minutes
+# later while the caller is told the broadcast failed. SAGE's own client-side
+# wait (SAGE_TX_COMMIT_TIMEOUT_MS, default 60s) is deliberately longer and never
+# gets to speak if the node answers first.
+#
+# Keep this strictly BELOW that client wait, so the node — which knows whether
+# it admitted the bytes and can name the transaction hash — is always the party
+# that answers. Raising this above SAGE_TX_COMMIT_TIMEOUT_MS inverts that: every
+# slow block becomes a client-side deadline with no verdict attached.
+BROADCAST_TX_COMMIT_TIMEOUT="${BROADCAST_TX_COMMIT_TIMEOUT:-45s}"
+
 echo "==> Generating ${NUM_VALIDATORS}-node testnet configuration..."
 
 # Clean existing configs
@@ -146,6 +161,13 @@ for i in $(seq 0 $((NUM_VALIDATORS - 1))); do
 
     # Set block time
     sed -i.bak 's/timeout_commit = ".*"/timeout_commit = "3s"/' "$CONFIG"
+
+    # How long a /broadcast_tx_commit caller waits for inclusion before the node
+    # answers with its own error. Left at upstream's 10s this expires before a
+    # loaded cluster's block lands, so an accepted transaction is reported to
+    # its caller as a failure. Set explicitly rather than inherited, and keep it
+    # below SAGE_TX_COMMIT_TIMEOUT_MS (60s default) — see the variable's comment.
+    sed -i.bak "s|timeout_broadcast_tx_commit = \".*\"|timeout_broadcast_tx_commit = \"${BROADCAST_TX_COMMIT_TIMEOUT}\"|" "$CONFIG"
 
     # App-v20 transition hygiene. The application can deterministically drain
     # bounded stale invalid transactions, but official split-Comet deployments

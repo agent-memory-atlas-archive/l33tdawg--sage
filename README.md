@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.1`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.2`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,18 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.20.2
+
+**A submission whose outcome the node could not observe is now reported as exactly that, instead of as a failure.** Every REST submit waits for `broadcast_tx_commit`, and that wait can expire before the block lands — on a loaded cluster the transaction then commits seconds later, while the caller has already been told `500 Broadcast error`, indistinguishable from a genuine internal fault. That was worse than unhelpful: a caller retrying "on error" re-signs, so one write can be applied twice. The endpoint now answers `202` with `"status":"indeterminate"`, the exact `tx_hash` of the bytes that went on the wire, the allocated `nonce`, and `"retryable":false`, while the node's signer nonce fence keeps reconciling the real fate.
+
+**Definitive outcomes keep their verdicts.** A CheckTx or FinalizeBlock rejection still returns the status it always did, and a full mempool still returns `429` with `Retry-After` — nothing was admitted, so there is nothing in flight to chase.
+
+**Generated testnets stop inheriting the wait that causes it.** `deploy/init-testnet.sh` now writes `timeout_broadcast_tx_commit` explicitly (45s) rather than leaving CometBFT's 10s default, and keeps it strictly below SAGE's own client-side wait (`SAGE_TX_COMMIT_TIMEOUT_MS`, 60s) so the node — which knows whether it admitted the bytes and can name the transaction hash — is always the party that answers.
+
+No consensus change or chain migration; app-v27 remains the ceiling.
+
+Container: `ghcr.io/l33tdawg/sage:11.20.2`. SDK 11.20.2.
 
 ## What's New in v11.20.1
 

@@ -173,9 +173,15 @@ class MemorySubmitRequest(BaseModel):
 
 
 class MemorySubmitResponse(BaseModel):
-    memory_id: str
+    # Absent when status=="indeterminate": the transaction is on the wire but the
+    # node could not observe whether it committed, so there is no confirmed id to
+    # report. Every other status carries one.
+    memory_id: str | None = None
     tx_hash: str
     status: str
+    # Allocated signer nonce, present on an indeterminate outcome. Public
+    # on-chain data, and the field that makes a held signing key actionable.
+    nonce: int | None = None
     task_status: str | None = None
     committed: bool | None = None
     committed_height: int | None = None

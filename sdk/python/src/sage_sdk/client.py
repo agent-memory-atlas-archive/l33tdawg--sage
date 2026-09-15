@@ -408,6 +408,14 @@ class SageClient:
         commit, and 202 has ``committed=True`` but
         ``projection_confirmed=False``: reconcile that exact ``memory_id`` and
         do not resubmit it.
+
+        A 202 with ``status == "indeterminate"`` is different and must not be
+        read as a failure: the transaction reached the network but the node
+        could not observe its fate before its own wait for inclusion expired, so
+        it may still commit. ``memory_id`` is None, ``tx_hash`` identifies the
+        exact broadcast transaction, and ``retryable`` is False — resubmitting
+        signs a NEW transaction, so reconcile by ``tx_hash`` (or re-read the
+        target state) instead of retrying.
         """
         req = MemorySubmitRequest(
             content=content,
