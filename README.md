@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.2`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.3`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,18 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.20.3
+
+**A peer's "too large" answer no longer kills the message.** The federated outbox classified `413` alongside the 4xx statuses that mean the peer understood the request and refused the bytes, so a single refusal marked the transport event `failed` and the canonical message with it: the row is never scanned again, and a durable-until-handled message carries an expiry a century out that never relieves it. That verdict is wrong for this status. A peer's per-route body cap is a build-time constant that moves when the peer upgrades, and the refusal is frequently not about size at all — on 2026-09-15 a message was refused as too large while its signed body sat 2.6 KB *under* the route's 16 KiB cap, and a *larger* message to the same peer was accepted unchanged minutes later. `413` now retries on an hourly floor, like the other capability-shaped status, so the event stays pending and delivers once the peer can take it.
+
+**The listener stopped calling every body it could not read "too large".** The federation gate read the request body and answered `413` for any error, which merged a genuine over-cap body with a truncated upload, a mid-body disconnect and a stream reset — and the sender's terminal `413` rule turned that mislabel into permanent loss. Only a real `*http.MaxBytesError` is `413` now; a body this node could not read is answered as a read failure, which stays retryable, and logged with its underlying cause.
+
+**A delivery failure is visible in the log.** The transport worker logged only when *recording* a failure failed, so an event could die with nothing in the log to say why. Every failed attempt now carries the event, the peer, the kind, the attempt count, the verdict and the retry delay.
+
+No consensus change or chain migration; app-v27 remains the ceiling.
+
+Container: `ghcr.io/l33tdawg/sage:11.20.3`. SDK 11.20.3.
 
 ## What's New in v11.20.2
 

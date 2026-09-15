@@ -565,6 +565,91 @@ func TestPipelineOutboxRetriesPeerSuspensionInsteadOfTerminalizing(t *testing.T)
 	require.Empty(t, updates, "temporary suspension must not emit terminal feedback")
 }
 
+func TestPipelineHTTPFailureVerdictKeepsPeerBodyLimitRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		terminal   bool
+		retryFloor time.Duration
+	}{
+		{name: "bad request stays permanent", status: http.StatusBadRequest, terminal: true},
+		{name: "forbidden stays permanent", status: http.StatusForbidden, terminal: true},
+		{name: "unprocessable stays permanent", status: http.StatusUnprocessableEntity, terminal: true},
+		{name: "body limit retries on a floor", status: http.StatusRequestEntityTooLarge,
+			terminal: false, retryFloor: time.Hour},
+		{name: "not implemented retries on a floor", status: http.StatusNotImplemented,
+			terminal: false, retryFloor: time.Hour},
+		{name: "server error retries on backoff", status: http.StatusInternalServerError},
+		{name: "gateway timeout retries on backoff", status: http.StatusGatewayTimeout},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			terminal, retryFloor := pipelineHTTPFailureVerdict(tc.status)
+			require.Equal(t, tc.terminal, terminal)
+			require.Equal(t, tc.retryFloor, retryFloor)
+		})
+	}
+}
+
+// The peer's per-route body cap moves when the peer upgrades, and a peer can emit
+// 413 from a failed body read rather than a real overflow. Terminalizing it
+// stranded msg-cc112a6a on 2026-09-15 while the same peer accepted a larger
+// message unchanged; the event has to stay queued for the retry to happen.
+func TestPipelineOutboxRetriesPeerBodyLimitInsteadOfTerminalizing(t *testing.T) {
+	ctx := context.Background()
+	m, ss, _ := newDrainTestManager(t)
+	sourceAgent := newPeerOperatorID(t)
+	targetAgent := newPeerOperatorID(t)
+	require.NoError(t, ss.CreateAgent(ctx, &store.AgentEntry{AgentID: sourceAgent, Name: "sender", Status: "active"}))
+	now := time.Now().UTC().Truncate(time.Second)
+	proof := store.PipelineAgentProof{
+		AgentID: sourceAgent, Signature: make([]byte, ed25519.SignatureSize), Timestamp: now.Unix(),
+		Nonce: []byte("12345678"), CanonicalRequest: []byte("POST /v1/pipe/send\n{}"),
+	}
+	msg := &store.PipelineMessage{
+		PipeID: "pipe-body-limit", FromAgent: sourceAgent, ToAgent: targetAgent, DestinationChainID: "chain-peer",
+		FederationPolicyEpoch: "epoch-1", FederationAgreementID: strings.Repeat("a", 64),
+		FederationContactID: strings.Repeat("b", 64), FederationContactRevision: strings.Repeat("c", 64),
+		Payload: "message the peer refused as too large", Status: "pending", CreatedAt: now,
+		ExpiresAt: now.Add(7 * 24 * time.Hour),
+	}
+	outbox := &store.PipelineTransportOutbox{
+		EventID: PipelineProofEventID("chain-local", "send", proof), PipeID: msg.PipeID,
+		RemoteChainID: msg.DestinationChainID, EventKind: "send", PolicyEpoch: msg.FederationPolicyEpoch,
+		AgreementID: msg.FederationAgreementID, ContactID: msg.FederationContactID,
+		ContactRevision: msg.FederationContactRevision, SourceAgentID: sourceAgent,
+		TargetAgentID: targetAgent, Proof: proof, CreatedAt: now, ExpiresAt: msg.ExpiresAt,
+	}
+	require.NoError(t, ss.InsertPipelineWithTransport(ctx, msg, outbox))
+	m.pipeTargetResolveFn = func(context.Context, string) (*RemotePipeTarget, error) {
+		return &RemotePipeTarget{
+			ChainID: "chain-peer", AgentID: targetAgent, PolicyEpoch: msg.FederationPolicyEpoch,
+			AgreementID: msg.FederationAgreementID, ContactID: msg.FederationContactID,
+			ContactRevision: msg.FederationContactRevision,
+		}, nil
+	}
+	m.pipeEventPushFn = func(context.Context, string, *PipeEvent) (*PipeEventResponse, error) {
+		return nil, &pipeEventHTTPError{
+			Status: http.StatusRequestEntityTooLarge,
+			Body:   `{"error":"request body too large"}`,
+		}
+	}
+
+	m.pipelineDrain(ctx, ss)
+	stored, err := ss.GetPipelineTransport(ctx, outbox.EventID)
+	require.NoError(t, err)
+	require.Equal(t, "pending", stored.State,
+		"a peer body-limit refusal must not permanently fail the event")
+	require.Equal(t, 1, stored.Attempts)
+	require.Contains(t, stored.LastError, "413")
+	queued, err := ss.GetPipeline(ctx, msg.PipeID)
+	require.NoError(t, err)
+	require.Equal(t, "pending", queued.Status,
+		"the message itself must stay deliverable")
+	updates, err := ss.ListPipelineDeliveryUpdates(ctx, sourceAgent, 10)
+	require.NoError(t, err)
+	require.Empty(t, updates, "a retryable refusal must not emit terminal feedback")
+}
+
 func TestOutboundPipeSendHoldsSourceAvailabilityLeaseThroughPeerAck(t *testing.T) {
 	ctx := context.Background()
 	m, ss, _ := newDrainTestManager(t)
