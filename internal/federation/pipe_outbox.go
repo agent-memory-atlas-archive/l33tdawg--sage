@@ -363,16 +363,40 @@ func (m *Manager) deliverPipelineEvent(parent context.Context, ss *store.SQLiteS
 				return
 			}
 		}
-		switch httpErr.Status {
-		case http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound,
-			http.StatusConflict, http.StatusGone, http.StatusRequestEntityTooLarge,
-			http.StatusUnprocessableEntity:
-			terminal = true
-		case http.StatusNotImplemented:
-			retryFloor = time.Hour
-		}
+		terminal, retryFloor = pipelineHTTPFailureVerdict(httpErr.Status)
 	}
 	m.recordPipelineDeliveryError(ss, outbox, err, terminal, retryFloor)
+}
+
+// pipelineHTTPFailureVerdict maps a peer's HTTP status onto this node's retry
+// policy for the event that produced it.
+//
+// A 4xx normally means the peer understood the request and refused it, so
+// re-sending identical bytes is pointless and the event is terminal. Two
+// statuses are exceptions because what they report is a property of the peer's
+// current build or of the connection, not of the bytes:
+//
+//   - 501 Not Implemented — the peer predates the route or feature, and becomes
+//     able to serve it on upgrade.
+//   - 413 Request Entity Too Large — the peer's per-route body cap is a
+//     build-time constant that moves when the peer upgrades, and a peer can also
+//     emit it from a failed body read rather than a real overflow (see
+//     readFederationBody). Treating it as permanent stranded a message the peer
+//     accepted unchanged seventy minutes later, so it retries on an hourly floor
+//     and the row stays visible as pending until it delivers or expires.
+//
+// The floor applies to the next attempt only: expirePipelineTransport still
+// bounds the row, and a durable-until-handled row that never fits is reported as
+// pending-with-reason rather than as a silent failure.
+func pipelineHTTPFailureVerdict(status int) (terminal bool, retryFloor time.Duration) {
+	switch status {
+	case http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound,
+		http.StatusConflict, http.StatusGone, http.StatusUnprocessableEntity:
+		return true, 0
+	case http.StatusNotImplemented, http.StatusRequestEntityTooLarge:
+		return false, time.Hour
+	}
+	return false, 0
 }
 
 func (m *Manager) recordPipelineDeliveryError(ss *store.SQLiteStore, event *store.PipelineTransportOutbox, deliveryErr error, terminal bool, retryFloor time.Duration) {
@@ -383,6 +407,16 @@ func (m *Manager) recordPipelineDeliveryError(ss *store.SQLiteStore, event *stor
 	if time.Now().UTC().Add(delay).After(event.ExpiresAt) {
 		terminal = true
 	}
+	// The failure itself is the operator's only record of why an event is late;
+	// recording it silently is what made the stranded 413 unreconstructable.
+	failureLog := m.logger.Debug()
+	if terminal {
+		failureLog = m.logger.Warn()
+	}
+	failureLog.Err(deliveryErr).Str("event_id", event.EventID).Str("pipe_id", event.PipeID).
+		Str("peer", event.RemoteChainID).Str("kind", event.EventKind).
+		Int("attempts", event.Attempts).Bool("terminal", terminal).
+		Dur("retry_in", delay).Msg("pipeline transport delivery failed")
 	if err := ss.RecordPipelineTransportFailure(context.Background(), event.EventID, deliveryErr.Error(), time.Now().UTC().Add(delay), terminal); err != nil {
 		m.logger.Warn().Err(err).Str("event_id", event.EventID).Msg("pipeline transport failure was not recorded")
 	}

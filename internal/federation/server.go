@@ -227,10 +227,14 @@ func (m *Manager) peerAuth(next http.Handler) http.Handler {
 				bodyLimit = maxLinkedMessageResolveBytes
 			}
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, bodyLimit)
-		body, err := io.ReadAll(r.Body)
+		body, err := readFederationBody(w, r, bodyLimit)
 		if err != nil {
-			httpError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			status, message := federationBodyError(err)
+			if status != http.StatusRequestEntityTooLarge {
+				m.logger.Warn().Err(err).Str("peer", peerChain).Str("path", r.URL.Path).
+					Msg("federation request body could not be read")
+			}
+			httpError(w, status, message)
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -1324,4 +1328,40 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func httpError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// errFederationBodyTooLarge is a size verdict: the peer sent more bytes than
+// this route accepts, and re-sending the same bytes cannot succeed.
+var errFederationBodyTooLarge = errors.New("request body too large")
+
+// readFederationBody reads a peer request body under the route's byte cap and
+// separates the two conditions io.ReadAll otherwise collapses. A body that
+// exceeded the cap reports *http.MaxBytesError; anything else — a truncated
+// upload, a mid-body disconnect, a stream reset — is a transport condition that
+// says nothing about the request's size.
+//
+// The distinction is load-bearing for delivery, not cosmetic: the sender's
+// outbox classifies this route's 413 as a peer refusal of the bytes, and a
+// previous build turned every read failure into one, so a single aborted upload
+// permanently stranded an otherwise deliverable message.
+func readFederationBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err == nil {
+		return body, nil
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return nil, errFederationBodyTooLarge
+	}
+	return nil, fmt.Errorf("read request body: %w", err)
+}
+
+// federationBodyError answers the peer for a failed body read. Only a genuine
+// overflow is 413; anything else is a read failure on this node, which the peer
+// must stay free to retry rather than read as a permanent refusal.
+func federationBodyError(err error) (int, string) {
+	if errors.Is(err, errFederationBodyTooLarge) {
+		return http.StatusRequestEntityTooLarge, "request body too large"
+	}
+	return http.StatusInternalServerError, "request body could not be read"
 }
