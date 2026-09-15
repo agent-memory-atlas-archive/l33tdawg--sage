@@ -23,6 +23,70 @@ const (
 	consensusTxSubmit consensusTxStage = "submit"
 )
 
+// IndeterminateSubmissionResponse is the body returned when a submission
+// reached the network but this node could not observe its fate before the
+// broadcast wait expired.
+//
+// It exists because every other answer would have been a claim we cannot
+// support. A 5xx says "your request failed" about a transaction that may
+// already be committed; a 2xx success would assert a verdict we do not have.
+// Status 202 with retryable=false and the transaction hash states exactly what
+// is true and hands over the one handle that resolves it.
+type IndeterminateSubmissionResponse struct {
+	Status    string  `json:"status"`
+	TxHash    string  `json:"tx_hash,omitempty"`
+	Nonce     *uint64 `json:"nonce,omitempty"`
+	Committed bool    `json:"committed"`
+	Retryable bool    `json:"retryable"`
+	Message   string  `json:"message"`
+}
+
+// indeterminateSubmissionMessage is the caller-facing instruction for an
+// ambiguous outcome. It is deliberately explicit about the one thing a caller
+// must not do: re-signing is not a retry, it is a second write.
+const indeterminateSubmissionMessage = "The transaction reached the network, but this node could not observe its fate before the broadcast wait expired. It may still commit, and this node's nonce fence is already reconciling it. Do not resubmit: look the transaction up by tx_hash and re-read the target state before deciding anything."
+
+// writeIndeterminateBroadcast reports an ambiguous submission outcome as an
+// ambiguous submission outcome, and reports whether it handled err.
+//
+// Only tx.ErrSubmitIndeterminate is claimed, and one definitive failure that
+// arrives wearing that type is explicitly refused: a full mempool. CometBFT
+// reports backpressure as an RPC-level error envelope, so the tx layer types it
+// indeterminate — from a text envelope it cannot rule admission out — while the
+// node has in fact refused the transaction outright. That case has its own
+// documented answer (429 + Retry-After + the mempool-full problem type) and must
+// keep it, or chain backpressure would be reported as an unknown outcome and
+// callers would start hunting for transactions that were never accepted.
+//
+// Every other failure keeps the status it already had: a CheckTx or
+// FinalizeBlock rejection, a sign or encode fault, a pre-send request-building
+// error. Those say something about the request that this response deliberately
+// does not — that no transaction is in flight.
+//
+// The hash and nonce are public on-chain data (see tx.IndeterminateDetails),
+// and withholding them is precisely what left callers guessing.
+func writeIndeterminateBroadcast(w http.ResponseWriter, err error) bool {
+	if isMempoolFullErr(err) {
+		return false
+	}
+	hash, nonce, hasNonce, ok := tx.IndeterminateDetails(err)
+	if !ok {
+		return false
+	}
+	body := IndeterminateSubmissionResponse{
+		Status:    "indeterminate",
+		TxHash:    hash,
+		Committed: false,
+		Retryable: false,
+		Message:   indeterminateSubmissionMessage,
+	}
+	if hasNonce {
+		body.Nonce = &nonce
+	}
+	writeJSON(w, http.StatusAccepted, body)
+	return true
+}
+
 // submitConsensusTx is the single nonce-lease ownership layer for REST
 // transactions signed by s.signingKey. The lease begins before nonce
 // allocation and ends only after submit returns, so two same-key handlers
@@ -95,6 +159,14 @@ func (s *Server) writeConsensusTxError(
 			writeProblem(w, http.StatusServiceUnavailable, "Submission unavailable", "Transaction submission was canceled before it began.")
 		}
 	default:
+		// An ambiguous outcome is not a broadcast failure, and reporting it as
+		// one is what taught callers to retry a write that may already be
+		// committed. Claim it before the generic mapping.
+		if errors.Is(err, tx.ErrSubmitIndeterminate) {
+			s.logger.Error().Err(err).Msg("broadcast outcome indeterminate for " + operation + " tx")
+			writeIndeterminateBroadcast(w, err)
+			return
+		}
 		s.logger.Error().Err(err).Msg("failed to broadcast " + operation + " tx")
 		status, publicMsg := broadcastErrorPublic(err)
 		writeProblem(w, status, "Broadcast error", publicMsg)

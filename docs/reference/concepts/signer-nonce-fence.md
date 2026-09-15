@@ -1,6 +1,6 @@
 # The signer fence — same-key nonce ordering, and the hole that is still open
 
-**Status: v11.20.1. This document states a KNOWN RESIDUAL that this release does
+**Status: v11.20.2. This document states a KNOWN RESIDUAL that this release does
 not close. Read the "What is still broken" section before you rely on anything
 here.**
 
@@ -171,7 +171,7 @@ A `kill -9`, a power cut, or a crash during the original RPC can still lose the
 fence. **Closing that needs durable pre-broadcast intent** — the exact bytes and
 hash recorded *before* the send, cleared only on a proven fate, reloaded and
 reconciled *before* any nonce is allocated on startup. That is persistence work
-and is **not in v11.20.1**.
+and is **not in v11.20.2**.
 
 The residual is covered by an executable test:
 `TestRestartWhileFencedLosesTheTransaction` in
@@ -242,6 +242,15 @@ do not mistake the gate for credential-only access.
 consensus rejection: there is no verdict to report and nothing to undo. HTTP
 surfaces map it to **503 with `Retry-After`**, never to a rejection status.
 `tx.ErrSigningQuiesced` means the same thing during a restart.
+
+The other side of the same coin is a submit whose outcome this process could not
+observe. That is **not** a failure and must not be reported as one: REST answers
+`202` with `"status":"indeterminate"`, the exact `tx_hash` of the bytes that went
+on the wire, the allocated `nonce`, and `"retryable":false` (see
+`tx.IndeterminateDetails`). Withholding the hash is what forced callers to
+guess, and a caller that "retries on error" here re-signs a **second**
+transaction on top of one that may already be committed. Before this contract,
+the ambiguity arrived as the same opaque 500 as a genuine internal fault.
 
 ### Triage
 

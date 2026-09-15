@@ -942,6 +942,23 @@ func (s *Server) toolRemember(ctx context.Context, params map[string]any) (any, 
 	if err := s.submitMemoryResilient(ctx, submitReq, &submitResp); err != nil {
 		return nil, fmt.Errorf("submit memory: %w", err)
 	}
+	if submitResp.Status == "indeterminate" {
+		// Sent, fate unknown. Report exactly that, for the same reason the REST
+		// layer does: an ambiguous outcome is neither a failure nor a commit,
+		// and calling it a failure is what taught callers to retry a write that
+		// may already be on chain. The node's signer nonce fence is already
+		// reconciling the transaction, and tx_hash is the handle that resolves
+		// it — a failure string would hide both facts from the agent.
+		return map[string]any{
+			"status":    "indeterminate",
+			"tx_hash":   submitResp.TxHash,
+			"committed": false,
+			"retryable": false,
+			"domain":    domain,
+			"type":      memType,
+			"message":   "The transaction reached the network but the node could not observe its fate before its own wait for inclusion expired; it may still commit. Do not resubmit: reconcile by tx_hash before repeating this write.",
+		}, nil
+	}
 	if submitResp.MemoryID == "" {
 		return nil, fmt.Errorf("submit memory: successful response omitted memory_id")
 	}
@@ -4024,6 +4041,14 @@ func (s *Server) toolTask(ctx context.Context, params map[string]any) (any, erro
 		if submitErr != nil {
 			return nil, fmt.Errorf("submit task: %w", submitErr)
 		}
+		if submitResp.Status == "indeterminate" {
+			// Same rule as toolRemember: an unobserved outcome is neither a
+			// failure nor a commit, and reporting it as a failure invites the
+			// caller to re-sign a task that may already be on chain. The
+			// idempotency key already makes a later replay safe; a blind retry
+			// is what this refuses to encourage.
+			return nil, fmt.Errorf("submit task outcome indeterminate (tx %s may still commit): do not resubmit; reconcile by tx_hash or repeat the same idempotency key", submitResp.TxHash)
+		}
 		if submitResp.MemoryID == "" {
 			return nil, fmt.Errorf("submit task: successful response omitted memory_id")
 		}
@@ -4524,10 +4549,20 @@ func (s *Server) storeMemory(ctx context.Context, content, domain, memType strin
 		"embedding":        embedResp.Embedding,
 	})
 	var submitResp struct {
-		EmbeddingQueued bool `json:"embedding_queued"`
+		Status          string `json:"status"`
+		TxHash          string `json:"tx_hash"`
+		EmbeddingQueued bool   `json:"embedding_queued"`
 	}
 	if subErr := s.submitMemoryResilient(ctx, submitReq, &submitResp); subErr != nil {
 		return false, subErr
+	}
+	if submitResp.Status == "indeterminate" {
+		// Returning success here would be the exact lie the indeterminate
+		// contract exists to remove: the node could not observe whether the
+		// transaction committed, so a caller told "stored" could be told it
+		// about a write that never landed. Report the ambiguity, name the
+		// transaction, and refuse to invite a blind resubmit.
+		return false, fmt.Errorf("memory submission outcome indeterminate (tx %s may still commit): do not resubmit; reconcile before retrying", submitResp.TxHash)
 	}
 	return degraded || submitResp.EmbeddingQueued, nil
 }

@@ -1,4 +1,4 @@
-<!-- Reconciled through SAGE v11.20.1. Cite file:line when behavior is non-obvious. -->
+<!-- Reconciled through SAGE v11.20.2. Cite file:line when behavior is non-obvious. -->
 
 # SAGE REST API Reference
 
@@ -128,6 +128,45 @@ A confirmed replay adds `"idempotent_replay":true` and
 The node performs bounded exact-assignee projection confirmation before it
 chooses `201`, `200`, or `202`. An idempotent replay whose projection is still
 unconfirmed also returns `202` and adds `"idempotent_replay":true`.
+
+**Ambiguous outcome — `202 Accepted` with `"status":"indeterminate"`:**
+
+A caller can outlive the node's own wait for block inclusion. When that happens
+the transaction **is on the wire and may still commit** — the node is already
+reconciling it through the signer nonce fence — and the endpoint now says exactly
+that instead of returning a failure:
+
+```json
+{
+  "status": "indeterminate",
+  "tx_hash": "<hex of the exact transaction that was broadcast>",
+  "nonce": 1789468101758619000,
+  "committed": false,
+  "retryable": false,
+  "message": "The transaction reached the network, but this node could not observe its fate before the broadcast wait expired. It may still commit, and this node's nonce fence is already reconciling it. Do not resubmit: look the transaction up by tx_hash and re-read the target state before deciding anything."
+}
+```
+
+`retryable:false` is the load-bearing field. Resubmitting is not a retry: it
+signs a **new** transaction, so a client that retries on a failure status can
+apply the same change twice. Poll the target state, or the transaction by hash,
+instead. Before this contract existed the same condition arrived as an opaque
+`500 Broadcast error`, indistinguishable from a genuine internal fault — and the
+observed result in the field was a caller re-signing a write that had already
+committed.
+
+Terminology, because it decides what a client may assume: **definitive** means
+the node knows the transaction's fate. A CheckTx or FinalizeBlock rejection is
+definitive and keeps its own status (`400`, `403`, `404`, `409`) — it is never
+reported as indeterminate. So is `429 Mempool full`, which stays a 429 with
+`Retry-After` even though the transaction was never admitted. Indeterminate
+means only one thing: sent, fate unknown.
+
+Operators can usually avoid the ambiguous window entirely, because it opens when
+the node's own wait expires before the block lands. `timeout_broadcast_tx_commit`
+in the node's `config.toml` must stay **below** `SAGE_TX_COMMIT_TIMEOUT_MS`
+(60 s default) so the node always answers first; `deploy/init-testnet.sh` sets it
+to 45 s for generated testnets.
 
 The key is permanently scoped to the effective policy principal. Its canonical
 binding covers that principal, exact assignee, stable memory ID, content hash,
