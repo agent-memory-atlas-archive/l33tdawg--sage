@@ -2,11 +2,14 @@ package rest
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/l33tdawg/sage/internal/tx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -92,4 +95,31 @@ func TestSubmitMemoryDefinitiveRejectionKeepsItsStatus(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &problem))
 	assert.Equal(t, "Broadcast error", problem["title"])
 	assert.Nil(t, problem["tx_hash"])
+}
+
+// Every handler that shares writeConsensusTxError — vote, governance, org,
+// agent, federation — depends on the indeterminate branch declining what it
+// does not own. A full mempool reaches that branch TYPED indeterminate (the tx
+// layer cannot rule admission out from an RPC text envelope), so a handler that
+// returned unconditionally on the type would answer chain backpressure with an
+// empty body and a 200. This pins the fall-through, not just the happy path.
+func TestWriteConsensusTxErrorKeepsMempoolFullOnItsOwnPath(t *testing.T) {
+	srv, _, _ := newTestServer(t, "http://127.0.0.1:1")
+
+	mempoolFull := tx.Indeterminate(
+		fmt.Errorf("broadcast error: Internal error: mempool is full: number of txs 5000 (max: 5000)"),
+		[]byte("encoded-transaction-bytes"),
+		nil,
+	)
+	require.True(t, errors.Is(mempoolFull, tx.ErrSubmitIndeterminate),
+		"fixture must be typed indeterminate to exercise the refusal")
+
+	rr := httptest.NewRecorder()
+	srv.writeConsensusTxError(rr, consensusTxSubmit, "vote", mempoolFull)
+
+	require.Equal(t, http.StatusTooManyRequests, rr.Code,
+		"a full mempool is chain backpressure, not an unknown outcome")
+	require.NotEmpty(t, rr.Body.String(), "the refusal path must still write a body")
+	assert.Contains(t, rr.Body.String(), "mempool full, retry later")
+	assert.NotContains(t, rr.Body.String(), "indeterminate")
 }

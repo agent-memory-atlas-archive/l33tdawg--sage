@@ -162,9 +162,13 @@ func (s *Server) writeConsensusTxError(
 		// An ambiguous outcome is not a broadcast failure, and reporting it as
 		// one is what taught callers to retry a write that may already be
 		// committed. Claim it before the generic mapping.
-		if errors.Is(err, tx.ErrSubmitIndeterminate) {
+		//
+		// The helper is the single authority on what it claims, and its false
+		// return is load-bearing: a full mempool reaches here typed
+		// indeterminate (see writeIndeterminateBroadcast) and must fall through
+		// to the mapping below, not be answered with nothing at all.
+		if writeIndeterminateBroadcast(w, err) {
 			s.logger.Error().Err(err).Msg("broadcast outcome indeterminate for " + operation + " tx")
-			writeIndeterminateBroadcast(w, err)
 			return
 		}
 		s.logger.Error().Err(err).Msg("failed to broadcast " + operation + " tx")
