@@ -1,4 +1,4 @@
-<!-- Verified against SAGE v11.20.2 code (2026-09-02). Cite file:line when behavior is non-obvious. This doc covers the v11 federation and brain graph surface; rest-api.md governs the core /v1/* endpoints. -->
+<!-- Verified against SAGE v11.20.3 code (2026-09-02). Cite file:line when behavior is non-obvious. This doc covers the v11 federation and brain graph surface; rest-api.md governs the core /v1/* endpoints. -->
 
 # SAGE Federation and Brain HTTP API Reference (v11)
 
@@ -224,7 +224,7 @@ Every established-peer request, including `query`, `write`, and `sync`, is authe
 ### `GET /fed/v1/status`
 
 Authenticated reachability / identity and permission preflight (`handleStatus`,
-`internal/federation/server.go:457-578`). Distinguishes "peer unreachable" from
+`internal/federation/server.go:461-589`). Distinguishes "peer unreachable" from
 "peer misconfigured" and carries the caller-bound current grant.
 
 **Response** (`StatusResponse`, `internal/federation/types.go:118-166`):
