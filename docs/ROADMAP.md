@@ -1,6 +1,6 @@
 # SAGE Roadmap
 
-**Status (2026-09):** **v11.20.0 is the current release.** An agent working state can now live encrypted on the node — private media (`GET`/`PUT /v1/private-media/{uuid}`) stores immutable JPEG originals with ciphertext-only rows, actor isolation and quota enforcement, and the workflow journal (`GET`/`PUT /v1/workflows[/{uuid}]`) is an encrypted, actor-bound place for long-running work with compare-and-swap revisions and an opt-out conversation guard; both are vault-required and reachable only from inside the app-v23 pipeline agent boundary. `GET /v1/messages/storage` reports the node honest message-storage posture, and `POST /v1/messages` takes a strict signed `require_encrypted_storage` boolean that fails closed with a 503 instead of silently storing plaintext. Local storage is no longer taken on faith — SQLite opens with `synchronous=FULL` and verifies its journal/synchronous mode at boot, and vault publication is atomic, so vault attached but not yet required is unobservable. `sage-gui init-lantern-private` adds fresh-only Lantern bring-up behind a private-listener policy that a missing or edited config cannot weaken. A public-memory Merkle index, migration builder and stage/promote path ship dormant with no production caller: staged rows stay out of the AppHash and promotion — what would write AppHash-covered state, named for app-v28 — is unreachable from a running node, so no fork is opened. No consensus change or chain migration; app-v27 remains the ceiling. Previously, v11.19.22 shipped: The Go build floor moves to patched Go 1.26.8 and the Go dependency group is refreshed — pgx v5.11.0, x/crypto v0.57.0, x/sync v0.23.0, x/sys v0.48.0, x/tools v0.50.0, klauspost/compress v1.20.0 and modernc.org/sqlite v1.58.0 (SQLite 3.53.4) — with the shipped binaries unchanged in behaviour and source builds now requiring Go 1.26.8+. A co-commit can no longer re-commit bytes the quorum already rejected — the REST submit boundary refuses a tombstoned content hash before it broadcasts — and the MCP client reports the node's own dedup verdict instead of scoring word overlap against a window of memories, so near-duplicates are stored and exact duplicates are skipped with the node's reason. Voter dedup is sticky — rejected, challenged, or forgotten content cannot be re-admitted under a fresh memory id while genuine corrections still pass — and the dedup lookup is indexed on SQLite and Postgres. The gRPC-Go dependency is patched to v1.83.2 for CVE-2026-84445. CEREBRUM adds a federation connectome, live metadata activity, clearer pairing steps, and explicit memory-sharing drafts. Trusted paired nodes now discover and
+**Status (2026-09):** **v11.20.1 is the current release.** Federated replies stay deliverable for seven days instead of one, the retention migration that re-stamped reply rows is repaired, and a refused reply proof records its exact reason on both sides. An agent working state can now live encrypted on the node — private media (`GET`/`PUT /v1/private-media/{uuid}`) stores immutable JPEG originals with ciphertext-only rows, actor isolation and quota enforcement, and the workflow journal (`GET`/`PUT /v1/workflows[/{uuid}]`) is an encrypted, actor-bound place for long-running work with compare-and-swap revisions and an opt-out conversation guard; both are vault-required and reachable only from inside the app-v23 pipeline agent boundary. `GET /v1/messages/storage` reports the node honest message-storage posture, and `POST /v1/messages` takes a strict signed `require_encrypted_storage` boolean that fails closed with a 503 instead of silently storing plaintext. Local storage is no longer taken on faith — SQLite opens with `synchronous=FULL` and verifies its journal/synchronous mode at boot, and vault publication is atomic, so vault attached but not yet required is unobservable. `sage-gui init-lantern-private` adds fresh-only Lantern bring-up behind a private-listener policy that a missing or edited config cannot weaken. A public-memory Merkle index, migration builder and stage/promote path ship dormant with no production caller: staged rows stay out of the AppHash and promotion — what would write AppHash-covered state, named for app-v28 — is unreachable from a running node, so no fork is opened. No consensus change or chain migration; app-v27 remains the ceiling. Previously, v11.19.22 shipped: The Go build floor moves to patched Go 1.26.8 and the Go dependency group is refreshed — pgx v5.11.0, x/crypto v0.57.0, x/sync v0.23.0, x/sys v0.48.0, x/tools v0.50.0, klauspost/compress v1.20.0 and modernc.org/sqlite v1.58.0 (SQLite 3.53.4) — with the shipped binaries unchanged in behaviour and source builds now requiring Go 1.26.8+. A co-commit can no longer re-commit bytes the quorum already rejected — the REST submit boundary refuses a tombstoned content hash before it broadcasts — and the MCP client reports the node's own dedup verdict instead of scoring word overlap against a window of memories, so near-duplicates are stored and exact duplicates are skipped with the node's reason. Voter dedup is sticky — rejected, challenged, or forgotten content cannot be re-admitted under a fresh memory id while genuine corrections still pass — and the dedup lookup is indexed on SQLite and Postgres. The gRPC-Go dependency is patched to v1.83.2 for CVE-2026-84445. CEREBRUM adds a federation connectome, live metadata activity, clearer pairing steps, and explicit memory-sharing drafts. Trusted paired nodes now discover and
 message eligible ordinary agents automatically, with memory sharing separately
 configured. It keeps safe registered-name addressing and
 reply-event visibility, the three-tab Access Controls redesign, five-minute
@@ -158,6 +158,31 @@ ceiling is app-v27.
 upgrade in place across all future releases. Routine personal-node upgrades
 remain automatic; the exceptional legacy-lineage repair is deliberately an
 explicit, reviewed operator ceremony rather than a silent mutation.
+
+## v11.20.1 release
+
+A federated reply is admissible — and its retained outbox event keeps retrying —
+for seven days after the proof that signs it, instead of 24 hours. The destination
+still admits the legacy 24-hour window, and one that predates the longer one is
+answered by a single downgraded retry rather than a terminal failure, so replies
+keep flowing across a mixed-version fleet. Receipt evidence about a message keeps
+its own separate 24-hour grace.
+
+The retention migration that extends durable canonical sends no longer re-stamps
+reply rows: an imported message's receiver-local `msg-fed-…` id matched its
+`msg-%` predicate, which pushed the reply's lifetime to +100 years, made every
+attempt an invalid proof at the destination, and removed the retry deadline that
+would have surfaced the loss. The rescue is scoped to sends, stamps the exact
+durable sentinel instead of SQLite's calendar `+100 years`, repairs rows an
+earlier build already extended, and reply envelopes are built from the signed
+proof so local retention state cannot reach the wire.
+
+Refused proofs are diagnosable now: the destination logs the exact reason and the
+sender self-checks its reply envelope against that same rule, because ten
+historical failures were only ever recorded as the destination's single opaque
+`invalid pipeline agent proof` refusal.
+
+No consensus change, no chain migration, and app-v27 remains the ceiling.
 
 ## v11.20.0 release
 

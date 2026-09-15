@@ -374,7 +374,7 @@ func (m *Manager) handlePipeReceiptV2(w http.ResponseWriter, r *http.Request) {
 	}
 	msg, err := ss.GetPipeline(r.Context(), outbox.PipeID)
 	if err != nil || event.EventAt.Before(msg.CreatedAt.Add(-maxTimestampSkew)) ||
-		event.EventAt.After(msg.ExpiresAt.Add(pipeEventResultLifetime)) ||
+		event.EventAt.After(msg.ExpiresAt.Add(receiptEvidenceGrace)) ||
 		pipeReceiptContentDigest(event.MessageID, m.localChainID, peer.ChainID, msg) != event.ContentDigest {
 		httpError(w, http.StatusConflict, "federated pipeline receipt content changed")
 		return

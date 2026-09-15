@@ -1839,7 +1839,9 @@ func (s *Server) handlePipeResult(w http.ResponseWriter, r *http.Request) {
 			AuthorizationMode: msg.FederationAuthorizationMode,
 			LinkedRelation:    append([]byte(nil), msg.FederationLinkedRelation...),
 			TargetAgentID:     msg.FromAgent, Proof: transportProof, CreatedAt: created,
-			ExpiresAt: created.Add(24 * time.Hour),
+			// The durable outbox deadline is the reply window itself. The delivery
+			// loop narrows it once if the destination predates this value.
+			ExpiresAt: created.Add(federation.PipeEventResultLifetime),
 		}
 		authorizer := s.federation.(federatedPipeAdmissionAuthorizer)
 		completeErr = authorizer.WithAuthorizedImportedPipe(r.Context(), msg, func() error {

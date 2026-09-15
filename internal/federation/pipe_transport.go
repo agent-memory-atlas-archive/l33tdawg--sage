@@ -19,10 +19,32 @@ import (
 )
 
 const (
-	PipeEventVersion        = 1
-	pipeEventResultLifetime = 24 * time.Hour
-	maxPipeProofBytes       = 1 << 20
+	PipeEventVersion = 1
+	// PipeEventResultLifetime is how long after its signed proof a federated reply
+	// stays admissible. Sender and destination both derive it from the proof
+	// timestamp and compare instants, so a change here is a wire change: every
+	// node has to accept the new value before any node sends it.
+	PipeEventResultLifetime = 7 * 24 * time.Hour
+	// legacyPipeEventResultLifetime is the window shipped through v11.19.x. A
+	// destination keeps admitting it so a peer that has not adopted the longer
+	// window can still return the result of work this node sent. Nothing outside
+	// this pair is ever accepted or sent.
+	legacyPipeEventResultLifetime = 24 * time.Hour
+	maxPipeProofBytes             = 1 << 20
+	// receiptEvidenceGrace bounds how far past a message's own expiry a peer may
+	// still present claim/read evidence for it. Deliberately independent of
+	// PipeEventResultLifetime: widening the reply window must not widen the window
+	// in which late evidence about a message is believable.
+	receiptEvidenceGrace = 24 * time.Hour
 )
+
+// acceptedResultLifetime reports whether expires is exactly a reply window this
+// node is allowed to honour: the current one, or the legacy value a peer that
+// upgrades on its own schedule may still stamp.
+func acceptedResultLifetime(created, expires time.Time) bool {
+	return expires.Equal(created.Add(PipeEventResultLifetime)) ||
+		expires.Equal(created.Add(legacyPipeEventResultLifetime))
+}
 
 var (
 	ErrFederatedPipeSuspended = errors.New("federated pipeline delivery is temporarily suspended")
@@ -406,10 +428,10 @@ func prevalidatePipeEventAgentProof(event *PipeEvent) error {
 			return errors.New("signed result request does not match the pipeline event")
 		}
 		created := time.Unix(event.Proof.Timestamp, 0).UTC()
-		expires := created.Add(pipeEventResultLifetime)
 		now := time.Now().UTC()
-		if !event.CreatedAt.Equal(created) || !event.ExpiresAt.Equal(expires) ||
-			now.After(expires) || created.After(now.Add(maxTimestampSkew)) {
+		if !event.CreatedAt.Equal(created) ||
+			!acceptedResultLifetime(created, event.ExpiresAt) ||
+			now.After(event.ExpiresAt) || created.After(now.Add(maxTimestampSkew)) {
 			return errors.New("signed pipeline result lifetime is invalid or expired")
 		}
 	default:
@@ -470,6 +492,13 @@ func (m *Manager) handlePipeEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := prevalidatePipeEventAgentProof(&event); err != nil {
+		// The caller keeps getting one opaque refusal so this route cannot be used
+		// as an oracle about its own proofs, but the operator still needs to know
+		// why a peer's reply was refused. Without this line the only record of a
+		// rejection is the sender's generic "invalid pipeline agent proof", which
+		// is not attributable to a cause from either side.
+		m.logger.Warn().Err(err).Str("peer", peer.ChainID).Str("kind", event.Kind).
+			Str("event_id", event.EventID).Msg("federated pipeline agent proof rejected")
 		httpError(w, http.StatusBadRequest, "invalid pipeline agent proof")
 		return
 	}
@@ -702,9 +731,9 @@ func (m *Manager) applyPipeResult(ctx context.Context, ss *store.SQLiteStore, pe
 		return "", false, fmt.Errorf("signed result request does not match the pipeline event")
 	}
 	created := time.Unix(event.Proof.Timestamp, 0).UTC()
-	expires := created.Add(pipeEventResultLifetime)
 	now := time.Now().UTC()
-	if !event.CreatedAt.Equal(created) || !event.ExpiresAt.Equal(expires) || now.After(expires) || created.After(now.Add(maxTimestampSkew)) {
+	if !event.CreatedAt.Equal(created) || !acceptedResultLifetime(created, event.ExpiresAt) ||
+		now.After(event.ExpiresAt) || created.After(now.Add(maxTimestampSkew)) {
 		return "", false, fmt.Errorf("signed pipeline result lifetime is invalid or expired")
 	}
 	sendEvent, err := ss.GetPipelineTransport(ctx, event.OriginEventID)
@@ -732,7 +761,7 @@ func (m *Manager) applyPipeResult(ctx context.Context, ss *store.SQLiteStore, pe
 		LinkedRelationDigest: linkedMessageRelationDigest(event.LinkedRelation),
 		SourceAgentID:        event.SourceAgentID, TargetAgentID: event.TargetAgentID,
 		EventKind: event.Kind, RemotePipeID: event.EventID, ContentHash: contentHash[:], ProofHash: proofHash[:],
-		LocalPipeID: sendEvent.PipeID, Outcome: "completed", ExpiresAt: expires.Add(maxTimestampSkew),
+		LocalPipeID: sendEvent.PipeID, Outcome: "completed", ExpiresAt: event.ExpiresAt.Add(maxTimestampSkew),
 	}
 	duplicate, err := ss.ApplyFederatedPipelineResult(ctx, sendEvent.PipeID, event.Result, dedup)
 	return sendEvent.PipeID, duplicate, err

@@ -1,4 +1,4 @@
-<!-- Reconciled through SAGE v11.20.0. Cite file:line when behavior is non-obvious. -->
+<!-- Reconciled through SAGE v11.20.1. Cite file:line when behavior is non-obvious. -->
 
 # SAGE REST API Reference
 
@@ -2019,7 +2019,7 @@ vault-backed. A foreign request or result is never automatically journaled,
 embedded, indexed as memory, written to Badger/AppHash, or treated as trusted
 instructions (`internal/store/sqlite.go:4764-4837`,
 `internal/store/pipeline_transport.go:92-176`,
-	`shouldAutoJournalPipeline`, `api/rest/pipe_handler.go:2251-2260`).
+	`shouldAutoJournalPipeline`, `api/rest/pipe_handler.go:2253-2262`).
 
 ### `POST /v1/pipe/resolve`
 
@@ -2486,6 +2486,14 @@ That ID names the already-existing signed result outbox
 event; it does not create a duplicate message. Only its signing replier can use
 the reply-status route, and unrelated/missing IDs share the same generic 404.
 
+A federated reply stays deliverable for seven days after the proof that signs it
+(`federation.PipeEventResultLifetime`), which is also its retained outbox
+deadline. The destination re-derives that window from the signed proof and admits
+the legacy 24-hour window as well, so a peer that has not adopted the longer one
+can still return results. If a destination refuses a reply with the generic
+`invalid pipeline agent proof` refusal, the sender narrows that one pending event
+to the legacy window and retries once before reporting a terminal failure.
+
 The canonical same-node Messages routes remain separate from the
 capability-gated federated receipt-v2 surface. A negotiated imported pipe adds
 these payload-free routes:
@@ -2580,7 +2588,7 @@ address resolved from a bounded legacy-status offline cache can be accepted
 locally while the peer is down. Delivery waits for that peer to return and pass
 the fresh live authorization preflight above.
 
-**Size caps → HTTP 413.** `payload` is capped at 256 KiB and `intent` at 8 KiB (`MaxPipeContentBytes`/`MaxPipeIntentBytes`, `internal/store/store.go:771-777`). The REST handler fast-fails an over-cap request with **413** before the store write; the store enforces the same caps at the `InsertPipeline` chokepoint (`internal/store/sqlite.go:6555` declaration, `:6557` payload, `:6560` intent) as defense in depth, mapping `ErrPipePayloadTooLarge`/`ErrPipeIntentTooLarge` (`store.go:792-794`) to 413.
+**Size caps → HTTP 413.** `payload` is capped at 256 KiB and `intent` at 8 KiB (`MaxPipeContentBytes`/`MaxPipeIntentBytes`, `internal/store/store.go:771-777`). The REST handler fast-fails an over-cap request with **413** before the store write; the store enforces the same caps at the `InsertPipeline` chokepoint (`internal/store/sqlite.go:6586` declaration, `:6557` payload, `:6560` intent) as defense in depth, mapping `ErrPipePayloadTooLarge`/`ErrPipeIntentTooLarge` (`store.go:792-794`) to 413.
 
 **Open-pipe quota → HTTP 429 + `Retry-After`.** A single verified agent identity may hold at most 256 non-terminal (pending or claimed) pipes open at once, and a node caps 10000 across all requesters (`MaxOpenPipesPerAgent`/`MaxOpenPipesGlobal`). An index-backed COUNT and its INSERT run under the same write critical section, so parallel sends cannot race past either cap. Over-quota inserts are rejected as **429 with `Retry-After`** (`ErrPipeQuotaPerAgent`/`ErrPipeQuotaGlobal`), keyed on the Ed25519-verified `from_agent`, not the spoofable rate-limit header. This mirrors the mempool-full recipe (see `GET /v1/chain/backpressure` below): treat it as backpressure and retry after the hinted interval, not as a per-agent rate-limit breach.
 
@@ -2817,7 +2825,7 @@ the result over the original agreement-bound return route
 | `source_chain_id` | string | for foreign work | Exact local reply-source chain returned as `reply_source_chain_id` by the pipe status preflight; prevents another node relabeling the signed result |
 | `claimant_session_id` | string | for foreign work; recommended for provider-addressed compatibility work | Opaque 1–128-byte session currently holding the claim. A provider-addressed row claimed by an older sessionless caller is fenced as `legacy`, and an omitted result session selects only that exact fence; it cannot bypass a named sibling session. |
 
-`result` is capped at 256 KiB (`MaxPipeContentBytes`, `store.go:775`); an over-cap submission is rejected **HTTP 413**, enforced both at the handler and at the `CompletePipeline` store chokepoint (`sqlite.go:6821`, mapping `ErrPipeResultTooLarge` at `:6823-6824`).
+`result` is capped at 256 KiB (`MaxPipeContentBytes`, `store.go:775`); an over-cap submission is rejected **HTTP 413**, enforced both at the handler and at the `CompletePipeline` store chokepoint (`sqlite.go:6852`, mapping `ErrPipeResultTooLarge` at `:6823-6824`).
 
 **Response** (HTTP 200):
 `{"status":"completed","journal_id":"<memory_id or empty>","journaled":true|false}`.

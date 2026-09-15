@@ -1578,20 +1578,56 @@ jobs:
           RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
         run: |
           set -euo pipefail
-          curl --fail --location --silent --show-error \
-            --retry 5 --retry-all-errors --retry-delay 2 \
-            --output /tmp/pypi-release.json \
-            "https://pypi.org/pypi/sage-agent-sdk/${RELEASE_VERSION}/json"
-          test "$(find python-dist -maxdepth 1 -type f | wc -l)" -eq \
-               "$(jq '.urls | length' /tmp/pypi-release.json)"
-          for file in python-dist/*; do
-            filename=$(basename "${file}")
-            local_digest=$(sha256sum "${file}" | cut -d' ' -f1)
-            remote_digest=$(jq -er --arg filename "${filename}" \
-              '.urls[] | select(.filename == $filename) | .digests.sha256' \
-              /tmp/pypi-release.json)
-            test "${local_digest}" = "${remote_digest}"
+          # Compare only the distributions we staged. The publish action writes
+          # nothing into this directory itself, but anything else that lands there
+          # (an attestation sidecar, for instance) must not be mistaken for a
+          # second package, and PyPI's JSON view can lag a few seconds behind a
+          # fresh upload. Retry the whole comparison so a slow index cannot fail a
+          # release that is actually complete, and print what was compared on
+          # failure instead of exiting 1 with no explanation.
+          staged=$(find python-dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort)
+          staged_count=$(printf '%s\n' "${staged}" | grep -c . || true)
+          for attempt in 1 2 3 4 5 6; do
+            curl --fail --location --silent --show-error \
+              --retry 3 --retry-all-errors --retry-delay 2 \
+              --output /tmp/pypi-release.json \
+              "https://pypi.org/pypi/sage-agent-sdk/${RELEASE_VERSION}/json" || {
+                echo "PyPI JSON for ${RELEASE_VERSION} is not available yet (attempt ${attempt})"
+                sleep 10
+                continue
+              }
+            remote_count=$(jq '[.urls[] | select(.filename | test("\\.(whl|tar\\.gz)$"))] | length' /tmp/pypi-release.json)
+            if [ "${staged_count}" -ne "${remote_count}" ]; then
+              echo "PyPI lists ${remote_count} distributions, staged ${staged_count} (attempt ${attempt})"
+              jq -r '.urls[].filename' /tmp/pypi-release.json
+              sleep 10
+              continue
+            fi
+            mismatch=""
+            while IFS= read -r file; do
+              [ -n "${file}" ] || continue
+              filename=$(basename "${file}")
+              local_digest=$(sha256sum "${file}" | cut -d' ' -f1)
+              remote_digest=$(jq -er --arg filename "${filename}" \
+                '.urls[] | select(.filename == $filename) | .digests.sha256' \
+                /tmp/pypi-release.json) || {
+                  mismatch="${filename}: missing from PyPI"
+                  break
+                }
+              if [ "${local_digest}" != "${remote_digest}" ]; then
+                mismatch="${filename}: staged ${local_digest} vs public ${remote_digest}"
+                break
+              fi
+            done <<< "${staged}"
+            if [ -z "${mismatch}" ]; then
+              echo "Verified ${staged_count} public distributions for ${RELEASE_VERSION}."
+              exit 0
+            fi
+            echo "Public PyPI digests do not match yet (attempt ${attempt}): ${mismatch}"
+            sleep 10
           done
+          echo "::error::Public PyPI distributions for ${RELEASE_VERSION} never matched the staged package"
+          exit 1
 
   publish-docker-latest:
     name: Promote Docker Latest Pointer

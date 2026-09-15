@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.0`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.1`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,18 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.20.1
+
+**Federated replies are deliverable for a week, not a day.** The window a reply stays admissible, and the deadline its retained outbox event is retried until, move from 24 hours to seven days (`federation.PipeEventResultLifetime`). A destination re-derives that window from the signed proof, still admits the legacy 24-hour window, and a destination that predates the longer one is answered by one downgraded retry at the old window instead of a terminal failure — so replies keep flowing while peers upgrade at their own pace. Receipt evidence about a message keeps its own separate 24-hour grace.
+
+**Replies can no longer be permanently lost to a local retention re-stamp.** The startup migration that extends durable canonical sends matched every pending `msg-%` outbox row, including the receiver-local `msg-fed-…` id of an imported message — whose outbox row is a reply. It re-stamped those replies to a +100-year lifetime, which the destination refuses as an invalid proof, and because the same column is the retry deadline it also removed the give-up path, so the reply retried until it happened to reach the peer and collect the permanent 400. The rescue is now scoped to sends, stamps the exact durable sentinel (`+36500 days`, not SQLite's calendar `+100 years`), repairs rows an earlier build already extended, and reply envelopes are built from the signed proof so local retention state can never reach the wire.
+
+**A refused proof now says why.** The destination logged nothing when it refused a proof, and the sender only recorded the destination's single opaque `invalid pipeline agent proof` refusal, which is how ten historical reply failures stayed unattributable. The destination now logs the exact reason and the sender checks its own reply envelope against that same rule before pushing.
+
+No consensus change or chain migration; app-v27 remains the ceiling.
+
+Container: `ghcr.io/l33tdawg/sage:11.20.1`. SDK 11.20.1.
 
 ## What's New in v11.20.0
 
