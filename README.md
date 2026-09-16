@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.4`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.5`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,18 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.20.5
+
+**A peer whose address moved repairs itself instead of waiting for a human.** The R2 fix let a P2P-only agreement run the authenticated route exchange across trust generations, because withholding the route fallback left it no transport at all. The same assumption fails for an agreement paired with a *concrete* endpoint once that host moves: the address is real, so nothing looks unroutable, but every request dials a machine that no longer answers while the peer's own traffic keeps arriving — the asymmetry operators report as "they can reach us, we cannot reach them". Withholding the fallback there also blocked the exchange, which is the only thing that can replace the stale snapshot, so the pair could never recover without re-pairing. The exemption is now about the path rather than the agreement shape: the exchange may use a stale snapshot as an authenticated bootstrap hint for both, while every other request still refuses a cross-generation route, and the persisted result is revalidated against the exact agreement and binding before it is written. A moved host also no longer reads as an offline one: the failure carries the trust-generation recovery code, so the operator's next move is a route repair rather than a network investigation.
+
+**A window of reachability is spent on the backlog, not on one message.** A peer that flaps hands out short windows, and the drain only attempts rows whose backoff has expired — so a fresh event, due immediately on its first attempt, consumed the window while older rows slept through it. That is exactly the shape of a message created at 21:15 delivering while messages from 21:10 and 21:11 stayed queued. A successful delivery now proves the peer reachable and makes the rest of *that peer's* backlog due at once (attempt counts and last errors untouched — only the sleep is cleared), and a drain pass covers sixteen rows rather than four, with concurrency unchanged.
+
+**Recall no longer hides results behind the confidence floor without saying so.** A memory reachable by tag was invisible to semantic recall because the node's floor (85) sat above the confidence its records were written with (0.80): the floor is applied before ranking, so no query can compensate, and the response said nothing — the whole observation tier is unreachable on a node tuned that way. Recall now reports the floor it ran with, how many candidates the floor removed, and a one-line note naming the remedy and the tiers a floor above 0.80 or 0.60 hides; the REST envelope carries the same facts under `filtered` and the `X-SAGE-Filter-Applied` header, and the settings surface warns where the value is read and saved. A floor that removed nothing is disclosed too, because that is what lets an empty result be trusted.
+
+No consensus change or chain migration; app-v27 remains the ceiling.
+
+Container: `ghcr.io/l33tdawg/sage:11.20.5`. SDK 11.20.5.
 
 ## What's New in v11.20.4
 

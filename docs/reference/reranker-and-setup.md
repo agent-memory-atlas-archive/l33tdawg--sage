@@ -1,4 +1,4 @@
-<!-- Reconciled through SAGE v11.20.4. Cite file:line when behavior is non-obvious. -->
+<!-- Reconciled through SAGE v11.20.5. Cite file:line when behavior is non-obvious. -->
 
 # SAGE Local Engines and First-Run Setup Reference (v11)
 
@@ -141,7 +141,7 @@ and inferences (0.60+), not just facts.
 
 ### `POST /v1/dashboard/settings/recall`
 
-Saves both values, **clamped** (`handleSaveRecallSettings`, `web/handler.go:5292-5343`).
+Saves both values, **clamped** (`handleSaveRecallSettings`, `web/handler.go:5327-5380`).
 
 **Request:** `{"top_k": 10, "min_confidence": 75}`
 **Response** (HTTP 200): `{"ok": true, "top_k": 10, "min_confidence": 75}`
