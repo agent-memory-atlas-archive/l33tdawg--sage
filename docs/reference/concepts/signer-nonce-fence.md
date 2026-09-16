@@ -1,9 +1,10 @@
 # The signer fence — same-key nonce ordering, and the hole that is still open
 
-**Status: this document describes a fence that survives the process that raised
-it. The residual it used to state — an in-process fence lost to a restart — is
-closed by durable intent plus an operator recovery that lifts only on a proven
-fate. Read "What the fence still cannot do" for the limits that remain.**
+**Status: v11.20.4. This document describes a fence that survives the process
+that raised it: the residual it used to state — an in-process fence lost to a
+restart — is closed by durable intent plus an operator recovery that lifts only
+on a proven fate. Read "What the fence still cannot do" for the limits that
+remain.**
 
 Source of truth: `internal/tx/nonce.go` (the lease),
 `internal/tx/nonce_fence.go` (the fence), `cmd/sage-gui/signer_fence_restart.go`
@@ -221,7 +222,7 @@ A `kill -9`, a power cut, or a crash during the original RPC can still lose the
 fence. **Closing that needs durable pre-broadcast intent** — the exact bytes and
 hash recorded *before* the send, cleared only on a proven fate, reloaded and
 reconciled *before* any nonce is allocated on startup. That is persistence work
-and is **not in v11.20.3**.
+and is **not in v11.20.4**.
 
 The residual is covered by an executable test:
 `TestRestartWhileFencedLosesTheTransaction` in

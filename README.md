@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.3`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.4`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,18 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.20.4
+
+**A signer fence now survives the process that raised it.** The fence is in-process state, and its own documentation named the hole: a restart, crash or SIGKILL discarded it, after which the nonce allocator re-seeded each key from the highest *committed* nonce — below the abandoned one by definition, because "unresolved" is what unresolved means — and the next action signed into that gap. The abandoned transaction was refused Code 4 when it finally landed, and the loss was untraceable: an operator saw an unrelated later action fail as a replay. Every submission is now shadowed by a durable record written at the last boundary before the bytes reach the transport, retired only on a proven fate, and re-raised as a fence at startup — so a node that was killed mid-submission comes back **refusing to sign that key** instead of re-seeding past it. Measured against a real cluster: two validators held fences for 13 days while their transaction sat in neither chain nor mempool, and their restarts bought exactly one signature each because the discarded fence was the only record of it.
+
+**A nonce that is provably dead now has an exit.** The fence's rule is that only proven fate lifts it, which left one shape it could not resolve on its own: a submission whose fate was never observed and whose signed bytes did not survive the process. `POST /v1/dashboard/signer-fence/lift` (behind the CEREBRUM operator gate) accepts two proofs and nothing weaker — the exact transaction found in a committed block, or supersession, meaning a higher nonce for that signer has already committed, which makes the fenced allocation permanently uncommittable under the consensus nonce rule. Both proofs are read by the node rather than asserted by the caller, and a superseded lift records that the fenced transaction's payload is permanently lost. A lookup miss stays unproven: CometBFT indexes a transaction only once it is in a block, so a mempool-resident transaction answers not-found exactly as it does one second before it commits.
+
+**What the record deliberately does not carry.** Not the signed bytes. Those routinely hold memory content that must not be copied into a plaintext table, so a restored fence resolves by proven fate instead of by re-submission. And a crash between the record and the wire holds a key that may have nothing in flight — the safe direction, resolved through the same proof path.
+
+No consensus change or chain migration; app-v27 remains the ceiling.
+
+Container: `ghcr.io/l33tdawg/sage:11.20.4`. SDK 11.20.4.
 
 ## What's New in v11.20.3
 
