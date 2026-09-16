@@ -1,8 +1,9 @@
 # The signer fence — same-key nonce ordering, and the hole that is still open
 
-**Status: v11.20.3. This document states a KNOWN RESIDUAL that this release does
-not close. Read the "What is still broken" section before you rely on anything
-here.**
+**Status: this document describes a fence that survives the process that raised
+it. The residual it used to state — an in-process fence lost to a restart — is
+closed by durable intent plus an operator recovery that lifts only on a proven
+fate. Read "What the fence still cannot do" for the limits that remain.**
 
 Source of truth: `internal/tx/nonce.go` (the lease),
 `internal/tx/nonce_fence.go` (the fence), `cmd/sage-gui/signer_fence_restart.go`
@@ -103,20 +104,40 @@ second transaction races the first.
 
 ---
 
-## What is still broken
+## What the fence still cannot do
 
-> **The fence is IN-PROCESS ONLY. It does not survive a restart or a crash.**
-
-Concretely:
+The failure this section used to describe is closed. It was:
 
 ```
 nonce N goes out; its fate is never observed        -> fence held, correct
-the process restarts (crash, SIGKILL, or an update) -> the fence is GONE
-the allocator re-seeds from the highest COMMITTED
+the process restarts (crash, SIGKILL, or an update) -> the fence was GONE
+the allocator re-seeded from the highest COMMITTED
   nonce for that key, which is still BELOW N        -> because N never committed
-it issues some M in the gap; M commits
-the late N finally arrives                          -> rejected Code 4
+it issued some M in the gap; M committed
+the late N finally arrived                          -> rejected Code 4
 ```
+
+The fence is still in-process STATE, but it is no longer in-process ONLY. Every
+submission is now shadowed by a durable record written before the bytes reach
+the transport (`RegisterSubmittedTx`, `internal/tx/nonce.go:485`) and retired
+only on a proven fate — a committed submit, a hash-bound definitive rejection
+(`ClearSubmittedTx`, `internal/tx/nonce.go:537`), or a fence lift. At startup
+`RestoreFencesFromIntents` (`internal/tx/nonce_fence_intent.go:148`) re-raises a
+fence for every record whose fate was never proven, so the node comes back
+REFUSING to sign those keys instead of re-seeding past them.
+
+Two limits remain, and both are deliberate:
+
+- **The durable record carries identity, not payload.** It holds the signer, the
+  transaction hash and the nonce. It does not hold the signed bytes, because
+  those routinely carry memory content that must not be copied into a plaintext
+  table. A restored fence therefore cannot resolve by re-submission the way a
+  live one does; it resolves on a proven fate.
+- **A crash between the record and the wire holds the key.** If the process dies
+  after registering intent but before the bytes left the machine, the fence is
+  raised for a transaction that may never have been sent. That is the safe
+  direction — nothing is signed past an unresolved allocation — and it resolves
+  through the same proof path, but it can hold a key that has nothing in flight.
 
 ### Restarting does **not** clear a fence safely
 
@@ -131,7 +152,36 @@ it.
 There is no flag, no override and no operator procedure to force a fence open,
 because there is no safe one.
 
-### What this release does about it
+### Recovering a fence on proof
+
+Two proofs are accepted, and nothing weaker. They are read by the NODE, not
+asserted by the caller: the committed nonce floor comes from the same store the
+allocator seeds from, and the transaction lookup goes to the node's own RPC.
+
+- **Committed or rejected**: the exact recorded hash is in a committed block.
+  The transaction's fate is known, the allocation is spent, and the key reopens.
+- **Superseded**: a HIGHER nonce for the same signer has committed. Consensus
+  refuses a stale nonce, so the fenced allocation can never be included. The key
+  reopens and the fenced transaction's payload is permanently lost — which is a
+  fact the lift records rather than a fact it hides.
+
+A missing lookup is NOT a proof and never becomes one here: CometBFT indexes a
+transaction only once it is in a block, so a mempool-resident transaction
+answers not-found exactly as one does a second before it commits.
+
+Operator surface:
+
+```
+POST /v1/dashboard/signer-fence/lift     {"signer": "<hex key or prefix>", "reason": "optional"}
+```
+
+It is gated by the same CEREBRUM operator gate as the rest of the operator view
+(`handleSignerFenceLift`, `web/signer_fence_lift.go:31`), and it answers `409`
+with the reason when the evidence is not there yet. Lifting is also what retires
+the durable record; a fence left held keeps its record and comes back on the next
+start.
+
+### What this release does about a restart while fenced
 
 The dominant road into that hole is not a crash — it is **this node's own updater
 deciding to restart**. That one we control, so:
