@@ -216,6 +216,14 @@ const (
 	// at or above the fenced nonce — but the fate label can be wrong, so no
 	// operator surface may treat it as proof the change needs redoing.
 	TxVerdictRejected
+	// TxVerdictSuperseded means a HIGHER nonce for the same signer has
+	// committed, so the fenced allocation can never be included — consensus
+	// refuses a stale nonce — and no nonce inversion is possible once the key
+	// reopens. It is the same safety property as TxVerdictRejected with a
+	// different cause, and it is the only verdict an operator can prove for a
+	// fence whose signed bytes did not survive a restart. The payload IS lost:
+	// unlike a rejection, there is no question of it applying later.
+	TxVerdictSuperseded
 )
 
 func (v TxVerdict) String() string {
@@ -224,6 +232,8 @@ func (v TxVerdict) String() string {
 		return "committed"
 	case TxVerdictRejected:
 		return "rejected by consensus"
+	case TxVerdictSuperseded:
+		return "superseded by a higher committed nonce"
 	default:
 		return "unresolved"
 	}
@@ -324,6 +334,13 @@ type indeterminateSubmit struct {
 	cause   fenceCause
 	encoded []byte
 	resolve TxResolveFunc
+	// recordedTxHash / recordedNonce / hasRecordedNonce carry the identity of a
+	// submission restored from DURABLE INTENT, whose signed bytes did not
+	// survive the process that sent them. They are used only when encoded is
+	// empty, so a live submission always speaks for itself.
+	recordedTxHash   string
+	recordedNonce    uint64
+	hasRecordedNonce bool
 }
 
 func (e *indeterminateSubmit) Error() string { return e.err.Error() }
@@ -485,6 +502,14 @@ const (
 	// that expired, a non-permanent CheckTx refusal. The healthiest of the
 	// unresolved causes: it means the transaction is probably still alive.
 	fenceCausePending fenceCause = "pending"
+	// fenceCauseRestored: this fence was raised at startup from DURABLE INTENT,
+	// not from a live submission — the previous process was killed while the
+	// transaction was in flight. The signed bytes did not survive it, so
+	// reconciliation cannot re-submit and the fence resolves only on a proven
+	// fate: the exact hash found in a committed block, or supersession by a
+	// higher committed nonce for this signer. It is labelled apart because it is
+	// fixed by an operator proof, not by waiting for a resolver.
+	fenceCauseRestored fenceCause = "restored_from_durable_intent"
 )
 
 // classifyFenceCause maps an error to its category by type only.
@@ -1111,6 +1136,12 @@ func fenceSubmission(key string, ind *indeterminateSubmit) {
 		txHash = strings.ToUpper(hex.EncodeToString(hash[:]))
 	}
 	nonce, hasNonce := fencedTxNonce(ind.encoded)
+	if len(ind.encoded) == 0 && ind.recordedTxHash != "" {
+		// Restored from durable intent: the identity was recorded before the
+		// previous process died, and there are no bytes to re-derive it from.
+		txHash = strings.ToUpper(ind.recordedTxHash)
+		nonce, hasNonce = ind.recordedNonce, ind.hasRecordedNonce
+	}
 
 	fenceMu.Lock()
 	fence := fences[key]
@@ -1186,6 +1217,10 @@ func liftFence(key string, fence *keyFence, verdict TxVerdict, detail string) {
 	if !opened {
 		return
 	}
+	// The fence is over, so its durable shadow must go with it: leaving the
+	// intent behind would re-raise this fence at the next startup and refuse a
+	// key whose fate has just been proven.
+	discardFenceIntent(key)
 	metrics.NonceFenceResolvedTotal.WithLabelValues(verdict.metricFate()).Inc()
 	publishFenceGauges()
 	emitFenceEvent("fence_lift",
@@ -1208,6 +1243,8 @@ func (v TxVerdict) metricFate() string {
 		return "committed"
 	case TxVerdictRejected:
 		return "rejected"
+	case TxVerdictSuperseded:
+		return "superseded"
 	default:
 		return "unresolved_BUG"
 	}
@@ -1513,6 +1550,23 @@ func ReportFencesDroppedAtShutdown(reason string) {
 // about where the transaction is, so ending reconciliation on one would reopen
 // the key on a clock — the failure this file was reworked to remove.
 func reconcileFencedSubmission(key string, fence *keyFence, ind *indeterminateSubmit) {
+	if len(ind.encoded) == 0 && ind.recordedTxHash != "" {
+		// Restored from durable intent. There is nothing to re-submit and
+		// nothing to look up by content: the bytes died with the previous
+		// process. Polling a resolver with no bytes would retry forever against
+		// a question that cannot be asked, so this holds the key open and waits
+		// for the one thing that can settle it — a proven fate, delivered by
+		// LiftFenceWithProof. It does NOT retire its own pending count, because
+		// that count is what the operator's lift consumes.
+		emitFenceEvent("fence_restored_waiting_for_proof",
+			fenceKV("signer", signerPrefix(key)),
+			fenceKV("tx_hash", fenceTxHash(fence)),
+			fenceNonceField(fence.nonce, fence.hasNonce),
+			fenceKV("note", "the signed bytes did not survive the restart, so this fence cannot be resolved "+
+				"by re-submission; it lifts only on a proven fate (committed hash, or a higher committed nonce)"))
+		<-fence.ch
+		return
+	}
 	unresolved := 0
 	for {
 		timing := currentFenceTimings()

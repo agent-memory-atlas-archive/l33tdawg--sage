@@ -1179,6 +1179,28 @@ func runServe(startupProof string) (rerr error) {
 	// merely unlikely.
 	tx.SetTxResolverFunc(tx.CometTxResolver(cometRPC))
 
+	// Durable fence intent, and the restore that makes it matter. The fence
+	// itself is in-process state: a restart, crash or SIGKILL used to discard it,
+	// after which the allocator re-seeded each key from the highest COMMITTED
+	// nonce — below the abandoned one — and signed into the gap, losing that
+	// transaction to a Code 4 that looked like an unrelated replay failure.
+	// Wiring the store makes the intent outlive the process; the restore
+	// re-raises a fence for every submission whose fate was never proven, so the
+	// node comes back REFUSING to sign those keys until an operator supplies the
+	// proof. It runs after the resolver is wired on purpose: a restored fence is
+	// reconciled by the same machinery, and restoring before the resolver would
+	// park every restored fence on "no resolver" until the next start.
+	tx.SetFenceIntentStore(signerFenceIntentStore{store: sqliteStore})
+	if restored, restoreErr := tx.RestoreFencesFromIntents(ctx); restoreErr != nil {
+		logger.Warn().Err(restoreErr).
+			Msg("durable signer-fence intents could not be restored; a key abandoned by the previous process " +
+				"is NOT fenced and may allocate past its unresolved nonce")
+	} else if restored > 0 {
+		logger.Warn().Int("restored_fences", restored).
+			Msg("signer fences restored from durable intent: the previous process ended with submissions " +
+				"whose fate was never proven, and those keys refuse to sign until it is")
+	}
+
 	// Backfill on_chain_height and first_seen for agents already registered on-chain
 	// but missing these fields in SQLite (upgrade path from v3.5 → v3.7.6+)
 	signingKeyForMigrate := loadNodeSigningKey(cometCfg.PrivValidatorKeyFile(), logger)

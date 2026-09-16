@@ -412,6 +412,12 @@ func WithNonceLease(ctx context.Context, sk ed25519.PrivateKey, submit func(nonc
 			})
 		}
 	}
+	if subErr == nil {
+		// The submit reported success, so the transaction is committed and its
+		// nonce is consumed: the durable shadow has served its purpose and must
+		// not survive to fence a key whose fate is known.
+		discardFenceIntent(key)
+	}
 	return subErr
 }
 
@@ -489,6 +495,11 @@ func RegisterSubmittedTx(sk ed25519.PrivateKey, encoded []byte, resolve TxResolv
 	registeredMu.Lock()
 	registeredSubmissions[string(pub)] = &registeredSubmission{encoded: txBytes, resolve: resolve}
 	registeredMu.Unlock()
+	// Durable shadow, written at the same boundary and for the same reason the
+	// in-memory registration exists: from here on the bytes may be in flight,
+	// and a process that dies before their fate is proven must not let the next
+	// start re-seed the allocator past them. See nonce_fence_intent.go.
+	recordFenceIntent(sk, encoded)
 }
 
 // ClearSubmittedTx retires sk's registration from INSIDE a WithNonceLease
@@ -532,6 +543,9 @@ func ClearSubmittedTx(sk ed25519.PrivateKey) {
 		return
 	}
 	takeRegisteredSubmission(string(pub))
+	// A definitive verdict on these exact bytes: nothing is in flight, so the
+	// durable shadow must not survive to fence the next start.
+	discardFenceIntent(string(pub))
 }
 
 // takeRegisteredSubmission removes and returns key's registration, or nil.

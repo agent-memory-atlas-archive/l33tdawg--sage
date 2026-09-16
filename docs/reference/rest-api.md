@@ -1,4 +1,4 @@
-<!-- Reconciled through SAGE v11.20.3. Cite file:line when behavior is non-obvious. -->
+<!-- Reconciled through SAGE v11.20.4. Cite file:line when behavior is non-obvious. -->
 
 # SAGE REST API Reference
 
@@ -1085,6 +1085,7 @@ Pre-app-v23 nodes retain their legacy projection behavior.
 | Method + path | Purpose |
 |---|---|
 | `GET /v1/dashboard/network/access` | Read Root/broker readiness plus non-Root agents, enrollment/role revisions, named profiles, Access Groups, linked-reader readiness, and separate linked-message consent readiness. |
+| `POST /v1/dashboard/signer-fence/lift` | CEREBRUM-operator recovery for one held signer fence, by full signer key or the prefix the health surface prints. The proof is read by the node, never asserted by the caller: the exact recorded transaction hash found in a committed block, or supersession by a higher committed nonce for the same signer. A lookup miss is not proof, so a transaction still sitting unindexed in a mempool answers `409` with the reason. Lifting retires the fence's durable intent; see [`concepts/signer-nonce-fence.md`](concepts/signer-nonce-fence.md). |
 | `PUT /v1/dashboard/network/access/agents/{id}/policy` | Atomically approve or change a non-Root local agent's role, named profile, clearance, and compatible owned home domain. On a writable approval, an omitted/blank `home_domain` generates `agent-<name-slug>-<random>` before the target consent signature is created; an explicit domain remains exact. |
 | `PUT /v1/dashboard/network/access/agents/{id}/name` | App-v26 H+1: current local Root/Admin changes only a governed non-Root agent's mutable display name. The handler copies the current boot bio into `AgentUpdate`; consensus rejects any operator attempt to alter that bio. `agent_id` and immutable `registered_name` never change. A no-op returns `status:"unchanged", committed:false`; a real change is reported only after commit or canonical reconciliation. |
 | `PUT /v1/dashboard/network/access/groups/{groupID}` | Create or replace a consensus local Access Group using `name`, local `members` (canonicalized and sorted by the handler), app-v26 `member_authority` (`read`, `read_write`, or `read_write_modify`), and an `expected_revision` binding. See [`concepts/app-v26-access-groups.md`](concepts/app-v26-access-groups.md). |
@@ -2627,7 +2628,7 @@ address resolved from a bounded legacy-status offline cache can be accepted
 locally while the peer is down. Delivery waits for that peer to return and pass
 the fresh live authorization preflight above.
 
-**Size caps → HTTP 413.** `payload` is capped at 256 KiB and `intent` at 8 KiB (`MaxPipeContentBytes`/`MaxPipeIntentBytes`, `internal/store/store.go:771-777`). The REST handler fast-fails an over-cap request with **413** before the store write; the store enforces the same caps at the `InsertPipeline` chokepoint (`internal/store/sqlite.go:6586` declaration, `:6557` payload, `:6560` intent) as defense in depth, mapping `ErrPipePayloadTooLarge`/`ErrPipeIntentTooLarge` (`store.go:792-794`) to 413.
+**Size caps → HTTP 413.** `payload` is capped at 256 KiB and `intent` at 8 KiB (`MaxPipeContentBytes`/`MaxPipeIntentBytes`, `internal/store/store.go:771-777`). The REST handler fast-fails an over-cap request with **413** before the store write; the store enforces the same caps at the `InsertPipeline` chokepoint (`internal/store/sqlite.go:6596` declaration, `:6557` payload, `:6560` intent) as defense in depth, mapping `ErrPipePayloadTooLarge`/`ErrPipeIntentTooLarge` (`store.go:792-794`) to 413.
 
 **Open-pipe quota → HTTP 429 + `Retry-After`.** A single verified agent identity may hold at most 256 non-terminal (pending or claimed) pipes open at once, and a node caps 10000 across all requesters (`MaxOpenPipesPerAgent`/`MaxOpenPipesGlobal`). An index-backed COUNT and its INSERT run under the same write critical section, so parallel sends cannot race past either cap. Over-quota inserts are rejected as **429 with `Retry-After`** (`ErrPipeQuotaPerAgent`/`ErrPipeQuotaGlobal`), keyed on the Ed25519-verified `from_agent`, not the spoofable rate-limit header. This mirrors the mempool-full recipe (see `GET /v1/chain/backpressure` below): treat it as backpressure and retry after the hinted interval, not as a per-agent rate-limit breach.
 
@@ -2864,7 +2865,7 @@ the result over the original agreement-bound return route
 | `source_chain_id` | string | for foreign work | Exact local reply-source chain returned as `reply_source_chain_id` by the pipe status preflight; prevents another node relabeling the signed result |
 | `claimant_session_id` | string | for foreign work; recommended for provider-addressed compatibility work | Opaque 1–128-byte session currently holding the claim. A provider-addressed row claimed by an older sessionless caller is fenced as `legacy`, and an omitted result session selects only that exact fence; it cannot bypass a named sibling session. |
 
-`result` is capped at 256 KiB (`MaxPipeContentBytes`, `store.go:775`); an over-cap submission is rejected **HTTP 413**, enforced both at the handler and at the `CompletePipeline` store chokepoint (`sqlite.go:6852`, mapping `ErrPipeResultTooLarge` at `:6823-6824`).
+`result` is capped at 256 KiB (`MaxPipeContentBytes`, `store.go:775`); an over-cap submission is rejected **HTTP 413**, enforced both at the handler and at the `CompletePipeline` store chokepoint (`sqlite.go:6862`, mapping `ErrPipeResultTooLarge` at `:6823-6824`).
 
 **Response** (HTTP 200):
 `{"status":"completed","journal_id":"<memory_id or empty>","journaled":true|false}`.

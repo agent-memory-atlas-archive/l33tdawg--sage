@@ -888,6 +888,16 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 	// MUST also run AFTER migrateTaskSupport for the same reason.
 	s.migrateDisputed(ctx)
 
+	// Migration: the durable shadow of an unproven submission, so a restart
+	// re-raises a signer fence instead of re-seeding the nonce allocator past
+	// the abandoned transaction.
+	if err := s.migrateSignerFenceIntent(ctx); err != nil {
+		// Fatal rather than ignored, unlike the column migrations above: without
+		// this table the node silently loses the fence across a restart, which
+		// is the exact failure it exists to prevent.
+		return fmt.Errorf("migrate signer fence intent: %w", err)
+	}
+
 	// Schema migrations — add columns to network_agents that didn't exist in earlier versions.
 	agentMigrations := []string{
 		"ALTER TABLE network_agents ADD COLUMN on_chain_height INTEGER DEFAULT 0",
