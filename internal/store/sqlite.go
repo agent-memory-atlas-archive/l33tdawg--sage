@@ -2227,7 +2227,11 @@ func (s *SQLiteStore) QuerySimilar(ctx context.Context, embedding []float32, opt
 		if cErr != nil {
 			return nil, fmt.Errorf("query similar decay floor: %w", cErr)
 		}
-		ordered = applyDecayFloor(ordered, opts.DecayFloor, opts.DecayNow, counts, opts.IncludeDisputed)
+		var dropped int
+		ordered, dropped = applyDecayFloor(ordered, opts.DecayFloor, opts.DecayNow, counts, opts.IncludeDisputed)
+		if opts.DecayFloorDropped != nil {
+			*opts.DecayFloorDropped += dropped
+		}
 	}
 	ordered, err = applyCandidateFilters(
 		ordered, opts.CandidateBatchFilter, opts.CandidateFilter,
@@ -2402,7 +2406,11 @@ func (s *SQLiteStore) SearchByText(ctx context.Context, query string, opts Query
 			if cErr != nil {
 				return nil, fmt.Errorf("search by text decay floor: %w", cErr)
 			}
-			page = applyDecayFloor(page, opts.DecayFloor, opts.DecayNow, counts, opts.IncludeDisputed)
+			var dropped int
+			page, dropped = applyDecayFloor(page, opts.DecayFloor, opts.DecayNow, counts, opts.IncludeDisputed)
+			if opts.DecayFloorDropped != nil {
+				*opts.DecayFloorDropped += dropped
+			}
 		}
 		return applyCandidateFilters(
 			page, opts.CandidateBatchFilter, opts.CandidateFilter,

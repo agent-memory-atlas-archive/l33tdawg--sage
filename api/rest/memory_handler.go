@@ -235,12 +235,25 @@ type FilterInfo struct {
 	TotalBeforeFilter *int     `json:"total_before_filter,omitempty"`
 	Visible           *int     `json:"visible,omitempty"`
 	HiddenCount       *int     `json:"hidden_count,omitempty"`
+	// ConfidenceFloor is the decayed-confidence floor this recall ran with, and
+	// HiddenByConfidenceFloor counts the candidates it removed BEFORE ranking.
+	//
+	// Both are present because the floor is the one silent-hide filter whose
+	// setting lives in operator preferences rather than in the call: without
+	// them a recall that returned nothing usable is indistinguishable from a
+	// recall over an empty store, and the observed failure was an agent
+	// concluding a memory was never written when it was merely below the
+	// threshold. A floor above a tier the write path produces (observations at
+	// 0.80, inferences at 0.60) hides that entire tier.
+	ConfidenceFloor         *float64 `json:"confidence_floor,omitempty"`
+	HiddenByConfidenceFloor *int     `json:"hidden_by_confidence_floor,omitempty"`
 }
 
 const (
 	filterHeader           = "X-SAGE-Filter-Applied"
 	filterBySubmittingAgts = "rbac_submitting_agents"
 	filterByClassification = "classification"
+	filterByConfidence     = "confidence_floor"
 )
 
 // MemoryResult is a memory record with computed confidence.
@@ -1723,12 +1736,26 @@ func (s *Server) confirmCommittedTaskRecord(
 // below. The legacy stored-column MinConfidence filter is disabled so it cannot also
 // run (it is decay-blind in both directions). No-op when no floor is requested, so
 // the fast path is unchanged. `now` must be the same instant used for serialization.
-func setDecayFloor(opts *store.QueryOptions, now time.Time) {
-	if opts.MinConfidence > 0 {
-		opts.DecayFloor = opts.MinConfidence
-		opts.DecayNow = now
-		opts.MinConfidence = 0
+func setDecayFloor(opts *store.QueryOptions, now time.Time) floorInfo {
+	if opts.MinConfidence <= 0 {
+		return floorInfo{}
 	}
+	opts.DecayFloor = opts.MinConfidence
+	opts.DecayNow = now
+	opts.MinConfidence = 0
+	// The store counts what the floor removed into this sink, so the response can
+	// disclose a filter that is otherwise invisible to the caller.
+	opts.DecayFloorDropped = new(int)
+	return floorInfo{floor: opts.DecayFloor, applied: true}
+}
+
+// resolved folds the store's count into the envelope facts. Called AFTER the
+// query returns; before that the sink still reads zero.
+func (f floorInfo) resolved(dropped *int) floorInfo {
+	if dropped != nil {
+		f.hidden = *dropped
+	}
+	return f
 }
 
 const appV23DisclosureRecallScanLimit = 100
@@ -2028,7 +2055,7 @@ func (s *Server) handleQueryMemory(w http.ResponseWriter, r *http.Request) {
 	// min_confidence is a DECAYED-confidence floor (rest-api.md): hand it to the
 	// store as DecayFloor, which filters the decayed value over the full candidate
 	// set before the top-K trim, pinned to `start` so it matches what we serialize.
-	setDecayFloor(&opts, start)
+	floor := setDecayFloor(&opts, start)
 
 	// Capture the exact canonical + vector-space source BEFORE semantic lookup.
 	// If any serving, canonical, or embedding-space mutation occurs before the
@@ -2204,7 +2231,7 @@ func (s *Server) handleQueryMemory(w http.ResponseWriter, r *http.Request) {
 	if s.isPostV23ForNextTx() {
 		hiddenByClassification = 0
 	}
-	setFilterInfo(w, &resp, filterApplied, hiddenByClassification)
+	setFilterInfo(w, &resp, filterApplied, hiddenByClassification, floor.resolved(opts.DecayFloorDropped))
 
 	federatedMode := federation.ModeSemantic
 	if req.Query != "" {
@@ -2288,8 +2315,21 @@ func (s *Server) handleQueryMemory(w http.ResponseWriter, r *http.Request) {
 // submittingAgentsApplied indicates the store-level agent-isolation filter was
 // used; hiddenByClassification is the count of records dropped by the
 // in-handler classification+multi-org gate.
-func setFilterInfo(w http.ResponseWriter, resp *QueryMemoryResponse, submittingAgentsApplied bool, hiddenByClassification int) {
-	if !submittingAgentsApplied && hiddenByClassification == 0 {
+// floorInfo carries what the decayed-confidence floor did to this recall. It is
+// zero-valued when the caller requested no floor, in which case nothing is
+// reported: a filter that did not run must not appear in the envelope.
+type floorInfo struct {
+	floor   float64
+	hidden  int
+	applied bool
+}
+
+func setFilterInfo(
+	w http.ResponseWriter, resp *QueryMemoryResponse,
+	submittingAgentsApplied bool, hiddenByClassification int, floor floorInfo,
+) {
+	floorRan := floor.applied && floor.floor > 0
+	if !submittingAgentsApplied && hiddenByClassification == 0 && !floorRan {
 		return
 	}
 	var applied []string
@@ -2299,11 +2339,22 @@ func setFilterInfo(w http.ResponseWriter, resp *QueryMemoryResponse, submittingA
 	if hiddenByClassification > 0 {
 		applied = append(applied, filterByClassification)
 	}
+	if floorRan {
+		applied = append(applied, filterByConfidence)
+	}
 	w.Header().Set(filterHeader, strings.Join(applied, ","))
 	info := &FilterInfo{By: applied}
 	if hiddenByClassification > 0 {
 		hc := hiddenByClassification
 		info.HiddenCount = &hc
+	}
+	if floorRan {
+		// Reported even when nothing was dropped: "the floor ran and removed
+		// nothing" is the fact that lets a caller trust an empty result.
+		threshold := floor.floor
+		info.ConfidenceFloor = &threshold
+		hidden := floor.hidden
+		info.HiddenByConfidenceFloor = &hidden
 	}
 	resp.Filtered = info
 }
@@ -2808,7 +2859,7 @@ func (s *Server) handleSearchMemory(w http.ResponseWriter, r *http.Request) {
 	// min_confidence is a DECAYED-confidence floor (rest-api.md): hand it to the
 	// store as DecayFloor, which filters the decayed value over the full candidate
 	// set before the top-K trim, pinned to `start` so it matches what we serialize.
-	setDecayFloor(&opts, start)
+	floor := setDecayFloor(&opts, start)
 
 	var records []*memory.MemoryRecord
 	var err error
@@ -2968,7 +3019,7 @@ func (s *Server) handleSearchMemory(w http.ResponseWriter, r *http.Request) {
 	if s.isPostV23ForNextTx() {
 		hiddenByClassification = 0
 	}
-	setFilterInfo(w, &resp, filterApplied, hiddenByClassification)
+	setFilterInfo(w, &resp, filterApplied, hiddenByClassification, floor.resolved(opts.DecayFloorDropped))
 
 	planSourceChainID, agreementBindings, queryChallenges, authorizationModels, authorizationAttestations := federationPlanFields(req.FederationContext)
 	s.mergeFederatedRecall(r, &resp, req.Federated, req.FederateChains, &federation.QueryRequest{
@@ -3139,7 +3190,7 @@ func (s *Server) handleHybridSearchMemory(w http.ResponseWriter, r *http.Request
 	// min_confidence is a DECAYED-confidence floor (rest-api.md): hand it to the
 	// store as DecayFloor. Carried on the fused opts, both hybrid sub-queries filter
 	// the decayed value before their trim, pinned to `start` for serialize-parity.
-	setDecayFloor(&opts, start)
+	floor := setDecayFloor(&opts, start)
 
 	var records []*memory.MemoryRecord
 	var err error
@@ -3296,7 +3347,7 @@ func (s *Server) handleHybridSearchMemory(w http.ResponseWriter, r *http.Request
 	if s.isPostV23ForNextTx() {
 		hiddenByClassification = 0
 	}
-	setFilterInfo(w, &resp, filterApplied, hiddenByClassification)
+	setFilterInfo(w, &resp, filterApplied, hiddenByClassification, floor.resolved(opts.DecayFloorDropped))
 
 	planSourceChainID, agreementBindings, queryChallenges, authorizationModels, authorizationAttestations := federationPlanFields(req.FederationContext)
 	s.mergeFederatedRecall(r, &resp, req.Federated, req.FederateChains, &federation.QueryRequest{

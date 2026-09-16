@@ -1272,6 +1272,18 @@ func (s *Server) toolRecall(ctx context.Context, params map[string]any) (any, er
 			},
 		}
 	}
+	// The confidence floor, disclosed even when it hid nothing. A caller that
+	// cannot see the floor cannot tell "this memory does not exist" from "this
+	// memory sits below the node's threshold", and that exact confusion is how a
+	// style rule reachable by tag became invisible to the recall path a fresh
+	// session uses at boot.
+	if floor, hidden, note, disclosed := confidenceFloorDisclosure(queryResp.Filtered); disclosed {
+		out["confidence_floor"] = floor
+		if hidden > 0 {
+			out["hidden_by_confidence_floor"] = hidden
+			out["filter_note"] = note
+		}
+	}
 	return out, nil
 }
 
@@ -1318,6 +1330,46 @@ type recallResp struct {
 	// IndexStatus: caller-scoped completeness of an empty result (complete /
 	// incomplete / unavailable). Relayed so an empty recall is not read as absence.
 	IndexStatus string `json:"index_status,omitempty"`
+	// Filtered relays the node's silent-hide envelope. The confidence floor is
+	// the one entry whose setting lives in operator preferences rather than in
+	// the call, so a recall that returned nothing relevant while hiding records
+	// below the threshold must say so: the observed failure was an agent reading
+	// "no results" as "this memory was never written".
+	Filtered *recallFilterInfo `json:"filtered,omitempty"`
+}
+
+// recallFilterInfo is the node's silent-hide envelope for one recall.
+type recallFilterInfo struct {
+	By                      []string `json:"by"`
+	ConfidenceFloor         *float64 `json:"confidence_floor,omitempty"`
+	HiddenByConfidenceFloor *int     `json:"hidden_by_confidence_floor,omitempty"`
+}
+
+// confidenceFloorDisclosure turns the envelope into what the caller is told.
+//
+// ok is false when the node reported no floor at all (an older node, or a caller
+// that asked for no floor), in which case nothing is added: a filter that did
+// not run must not appear. hidden is reported even when it is zero, because "the
+// floor ran and removed nothing" is what lets an agent trust an empty result;
+// note is empty in that case.
+func confidenceFloorDisclosure(filter *recallFilterInfo) (floor float64, hidden int, note string, ok bool) {
+	if filter == nil || filter.ConfidenceFloor == nil {
+		return 0, 0, "", false
+	}
+	floor = *filter.ConfidenceFloor
+	if filter.HiddenByConfidenceFloor != nil {
+		hidden = *filter.HiddenByConfidenceFloor
+	}
+	if hidden <= 0 {
+		return floor, 0, "", true
+	}
+	note = fmt.Sprintf(
+		"%d candidate(s) matched this query but sit below the node's confidence floor of %.2f, "+
+			"so they were not returned. Pass a lower min_confidence to see them, or check the node's "+
+			"recall settings if that floor is not what you expect; a floor above 0.80 hides the "+
+			"observation tier and above 0.60 hides the inference tier.",
+		hidden, floor)
+	return floor, hidden, note, true
 }
 
 type recallFederationInfo struct {

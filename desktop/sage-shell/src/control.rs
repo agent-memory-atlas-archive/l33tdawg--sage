@@ -659,7 +659,7 @@ mod tests {
         assert!(supported_daemon_version("11.17.0"));
         assert!(supported_daemon_version("11.18.0"));
         assert!(supported_daemon_version("11.19.0"));
-        assert!(supported_daemon_version("11.20.4"));
+        assert!(supported_daemon_version("11.20.5"));
         assert!(!supported_daemon_version("11.21.0"));
         assert!(!supported_daemon_version("eleven"));
         assert!(valid_generation(&"A".repeat(43)));

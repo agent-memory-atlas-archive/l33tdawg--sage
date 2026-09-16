@@ -15,7 +15,12 @@ const (
 	pipeDeliveryTimeout  = 20 * time.Second
 	pipeRetryBase        = 5 * time.Second
 	pipeRetryMax         = 2 * time.Minute
-	pipeDrainLimit       = 4
+	// One drain pass now covers a backlog rather than a hand's width of it. The
+	// concurrency below still bounds how many dials are in flight at once, so a
+	// larger limit changes how much of a connectivity window is USED, not how hard
+	// the node hits a peer: a peer that flaps hands out windows of seconds to
+	// minutes, and a four-row limit spent them one hand at a time.
+	pipeDrainLimit = 16
 	pipeDrainConcurrency = 4
 )
 
@@ -318,13 +323,17 @@ func (m *Manager) deliverPipelineEvent(parent context.Context, ss *store.SQLiteS
 		err = deliver()
 	}
 	if err == nil {
-		if deliveryRecorded {
-			return
+		if !deliveryRecorded {
+			if markErr := ss.MarkPipelineTransportDelivered(context.Background(), outbox.EventID); markErr != nil {
+				m.logger.Warn().Err(markErr).Str("event_id", outbox.EventID).Msg("pipeline transport delivery was not recorded")
+				return
+			}
 		}
-		if markErr := ss.MarkPipelineTransportDelivered(context.Background(), outbox.EventID); markErr != nil {
-			m.logger.Warn().Err(markErr).Str("event_id", outbox.EventID).Msg("pipeline transport delivery was not recorded")
-			return
-		}
+		// This delivery proves the peer answered, so the rest of its backlog must
+		// not keep sleeping in backoff through the same window. See
+		// WakePipelineTransportForPeer for the failure shape this closes: a peer
+		// that flaps gets short windows, and a sleeping queue misses them.
+		m.wakePeerBacklog(ss, outbox.RemoteChainID)
 		if outbox.EventKind == "send" && outbox.ReceiptProtocolVersion == PipeReceiptVersion {
 			binding := store.FederatedReceiptBinding{
 				MessageID: outbox.EventID, LocalPipeID: outbox.PipeID,
@@ -366,6 +375,24 @@ func (m *Manager) deliverPipelineEvent(parent context.Context, ss *store.SQLiteS
 		terminal, retryFloor = pipelineHTTPFailureVerdict(httpErr.Status)
 	}
 	m.recordPipelineDeliveryError(ss, outbox, err, terminal, retryFloor)
+}
+
+// wakePeerBacklog makes a peer's other queued events due immediately, now that a
+// delivery has just proved that peer reachable.
+func (m *Manager) wakePeerBacklog(ss *store.SQLiteStore, remoteChainID string) {
+	if remoteChainID == "" {
+		return
+	}
+	woken, err := ss.WakePipelineTransportForPeer(context.Background(), remoteChainID, time.Now().UTC())
+	if err != nil {
+		m.logger.Warn().Err(err).Str("peer", remoteChainID).
+			Msg("pipeline backlog wake failed; queued events keep their existing retry schedule")
+		return
+	}
+	if woken > 0 {
+		m.logger.Debug().Str("peer", remoteChainID).Int64("woken", woken).
+			Msg("peer answered, so its queued events were made due rather than left in backoff")
+	}
 }
 
 // pipelineHTTPFailureVerdict maps a peer's HTTP status onto this node's retry
