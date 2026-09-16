@@ -738,6 +738,41 @@ func (s *SQLiteStore) RecordPipelineTransportFailure(ctx context.Context, eventI
 	})
 }
 
+// WakePipelineTransportForPeer clears the retry backoff of every OTHER pending
+// event for one peer, and returns how many rows it made due.
+//
+// Why this exists: the drain only attempts rows whose next_attempt_at has
+// passed, and a row that has failed a few times sleeps up to the backoff ceiling.
+// A peer that flaps therefore hands out short windows of reachability, and each
+// window is spent on whichever events happen to be due — typically a freshly
+// queued one, whose first attempt is due immediately — while the backlog sits in
+// backoff through the same window and misses it. The observed shape is a message
+// created at 21:15 delivered while messages created at 21:10 and 21:11 are still
+// queued: not a lost queue, a queue that slept through its own opportunity.
+//
+// A successful delivery is proof the peer is reachable RIGHT NOW, so the rest of
+// that peer's backlog is made due immediately and the next drain uses the window
+// instead of missing it. Attempts are deliberately NOT reset: the count and the
+// last error stay truthful, and only the sleep between them is cleared.
+func (s *SQLiteStore) WakePipelineTransportForPeer(ctx context.Context, remoteChainID string, now time.Time) (int64, error) {
+	if strings.TrimSpace(remoteChainID) == "" {
+		return 0, errors.New("pipeline transport wake requires a remote chain id")
+	}
+	result, err := s.writeExecContext(ctx, `
+		UPDATE pipeline_transport_outbox SET next_attempt_at=?
+		WHERE state='pending' AND remote_chain_id=?
+		AND julianday(next_attempt_at) > julianday(?)`,
+		formatTime(now), remoteChainID, formatTime(now))
+	if err != nil {
+		return 0, fmt.Errorf("wake pipeline transport backlog: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, nil // the update applied; only the count is unavailable
+	}
+	return affected, nil
+}
+
 // DowngradeFederatedResultLifetime narrows one pending result row to the legacy
 // reply window so its next attempt can satisfy a destination that predates
 // federation.PipeEventResultLifetime. It reports false when the row is already
