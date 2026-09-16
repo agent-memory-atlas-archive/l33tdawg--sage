@@ -5275,7 +5275,10 @@ func (h *DashboardHandler) handleGetRecallSettings(w http.ResponseWriter, r *htt
 		}
 	}
 
-	confidence := 70 // Default 70% — catches observations (0.80+) and inferences (0.60+), not just facts
+	// Default 70%: facts (0.95) and observations (0.80) stay reachable, and the
+	// inference tier (0.60) is deliberately below it. The handler warns when a
+	// stored value hides a tier; see recallFloorTierWarning.
+	confidence := 70
 	if v, ok := prefs["recall_min_confidence"]; ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			confidence = n
@@ -5285,7 +5288,39 @@ func (h *DashboardHandler) handleGetRecallSettings(w http.ResponseWriter, r *htt
 	writeJSONResp(w, http.StatusOK, map[string]any{
 		"top_k":          topK,
 		"min_confidence": confidence,
+		// Read-side disclosure, for a node whose stored floor was written by an
+		// older build whose input floor was 85 (see the clamp note on save): the
+		// operator should learn what the value hides the moment they look at it.
+		"warning": recallFloorTierWarning(confidence),
 	})
+}
+
+// recallFloorTierWarning names the write tiers a confidence floor hides.
+//
+// The floor is a hard filter applied before ranking, so it cannot be compensated
+// for by a better query: a tier below it is simply unreachable by recall while
+// remaining visible to a tag or list lookup. The default exists precisely to
+// avoid that — web/handler.go sets 70 with the comment "catches observations
+// (0.80+) and inferences (0.60+), not just facts" — so a value above a tier was
+// chosen against the grain of the data and should say so where it is set.
+func recallFloorTierWarning(percent int) string {
+	floor := float64(percent) / 100.0
+	var hidden []string
+	if floor > 0.95 {
+		hidden = append(hidden, "facts written at 0.95")
+	}
+	if floor > 0.80 {
+		hidden = append(hidden, "observations written at 0.80")
+	}
+	if floor > 0.60 {
+		hidden = append(hidden, "inferences written at 0.60")
+	}
+	if len(hidden) == 0 {
+		return ""
+	}
+	return "This floor hides " + strings.Join(hidden, ", ") +
+		": recall will not return them however well they match, though a tag or list lookup still will. " +
+		"The default is 70, which keeps every tier reachable."
 }
 
 // handleSaveRecallSettings saves recall tuning parameters.
@@ -5337,6 +5372,8 @@ func (h *DashboardHandler) handleSaveRecallSettings(w http.ResponseWriter, r *ht
 		"ok":             true,
 		"top_k":          body.TopK,
 		"min_confidence": body.MinConfidence,
+		// Saving a floor above a write tier is allowed, but never silent.
+		"warning": recallFloorTierWarning(body.MinConfidence),
 	})
 }
 

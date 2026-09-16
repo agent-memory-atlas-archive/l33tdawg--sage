@@ -1026,7 +1026,11 @@ func (s *PostgresStore) QuerySimilar(ctx context.Context, embedding []float32, o
 			if cErr != nil {
 				return nil, fmt.Errorf("query similar decay floor: %w", cErr)
 			}
-			page = applyDecayFloor(page, opts.DecayFloor, opts.DecayNow, counts, opts.IncludeDisputed)
+			var dropped int
+			page, dropped = applyDecayFloor(page, opts.DecayFloor, opts.DecayNow, counts, opts.IncludeDisputed)
+			if opts.DecayFloorDropped != nil {
+				*opts.DecayFloorDropped += dropped
+			}
 		}
 		return applyCandidateFilters(
 			page, opts.CandidateBatchFilter, opts.CandidateFilter,

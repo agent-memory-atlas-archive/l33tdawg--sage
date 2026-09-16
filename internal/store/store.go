@@ -117,6 +117,17 @@ type QueryOptions struct {
 	// serialized confidence exactly consistent with the filter decision.
 	DecayFloor float64   `json:"-"`
 	DecayNow   time.Time `json:"-"`
+	// DecayFloorDropped, when non-nil, receives the number of candidates the
+	// decayed-confidence floor REMOVED, summed across every page the store
+	// scanned for this query.
+	//
+	// The floor is a silent filter: without this count the caller cannot tell
+	// "nothing matched" from "matching records were filtered out", which is the
+	// difference between a memory that was never written and one that exists but
+	// sits below the operator's confidence threshold. Callers that serialize a
+	// recall response are expected to pass a sink and disclose it; consensus
+	// paths leave it nil and are unaffected.
+	DecayFloorDropped *int `json:"-"`
 	// CandidateFilter is a trusted, read-only admission hook used by app-v23
 	// recall to apply live authorization before TopK is consumed. Stores must
 	// preserve rank order, continue scanning until TopK admitted records are
@@ -209,14 +220,15 @@ const DisputedConfidenceHaircut = 0.8
 // array, so callers must use the returned slice. Because it is reached only when a
 // caller sets a positive floor (REST/federation recall, never consensus tx paths),
 // the wall-clock default never executes during deterministic block execution.
-func applyDecayFloor(recs []*memory.MemoryRecord, floor float64, now time.Time, counts map[string]int, includeDisputed bool) []*memory.MemoryRecord {
+func applyDecayFloor(recs []*memory.MemoryRecord, floor float64, now time.Time, counts map[string]int, includeDisputed bool) ([]*memory.MemoryRecord, int) {
 	if floor <= 0 || len(recs) == 0 {
-		return recs
+		return recs, 0
 	}
 	if now.IsZero() {
 		now = time.Now()
 	}
 	out := recs[:0]
+	dropped := 0
 	for _, r := range recs {
 		confidence := memory.ComputeConfidenceForRecord(r, now, counts[r.MemoryID])
 		if includeDisputed && r.Status == memory.StatusChallenged {
@@ -224,9 +236,14 @@ func applyDecayFloor(recs []*memory.MemoryRecord, floor float64, now time.Time, 
 		}
 		if confidence >= floor {
 			out = append(out, r)
+		} else {
+			// Counted, never logged with the record itself: the count is what
+			// makes the filter visible, and naming a hidden record in a log
+			// would leak exactly what the caller was not allowed to see.
+			dropped++
 		}
 	}
-	return out
+	return out, dropped
 }
 
 // ListOptions defines parameters for listing memories.
