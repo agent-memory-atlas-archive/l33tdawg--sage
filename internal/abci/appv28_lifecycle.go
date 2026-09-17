@@ -1,12 +1,22 @@
 package abci
 
-import "fmt"
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/l33tdawg/sage/internal/store"
+)
 
 // postAppV28Fork is the strict H+1 boundary for the public-memory commitment
 // and the consensus-side co-commit tombstone rule. The activation block at H
 // still runs under app-v27 rules; both v28 rules apply only from H+1.
 func (app *SageApp) postAppV28Fork(height int64) bool {
 	return app.appV28AppliedHeight > 0 && height > app.appV28AppliedHeight
+}
+
+func (app *SageApp) postAppV28Rules(height int64) bool {
+	return app.postAppV28Fork(height)
 }
 
 // refreshAppV28Fork populates appV28AppliedHeight from the persisted upgrade
@@ -68,6 +78,84 @@ func (app *SageApp) validateAppV28Prerequisite() error {
 			appV28UpgradeName, app.appV28AppliedHeight,
 			appV27UpgradeName, predecessorHeight,
 		)
+	}
+	// An applied v28 record without an intact promoted index is exactly the
+	// state the composite AppHash rule cannot hash: every later block would
+	// either refuse or, worse, commit a root that does not describe the public
+	// set. Refuse to serve instead.
+	if err := app.badgerStore.ValidatePublicMemoryStage(); err != nil {
+		return fmt.Errorf("applied %s has an invalid public-memory stage: %w", appV28UpgradeName, err)
+	}
+	return nil
+}
+
+// preparePublicMemoryStageForActivation builds the durable, AppHash-excluded
+// staged copy of the sparse public-memory index for an activation block that
+// is about to execute, mirroring prepareAppV23MigrationStage: it runs BEFORE
+// the speculative consensus transaction takes its snapshot, so the staged
+// index describes exactly H-1 state and no transaction accepted at H can
+// invalidate it. The stage itself is invisible to every AppHash rule (its keys
+// live under the stage prefix), so a node that stages and then re-executes the
+// block after a crash produces byte-identical state.
+//
+// It is a no-op on every block that is not an app-v28 activation, which is why
+// nothing changes for a chain that has not opened the fork.
+func (app *SageApp) preparePublicMemoryStageForActivation(ctx context.Context, height int64) error {
+	plan, err := app.badgerStore.GetUpgradePlan()
+	if errors.Is(err, store.ErrNoUpgradePlan) {
+		return nil
+	}
+	if err != nil {
+		// Same contract as the app-v23 stage: a plan-read failure is reported
+		// authoritatively by finalizeBlockUncommitted, which selects the atomic
+		// transaction on read uncertainty. Do not invent a second error path.
+		return nil
+	}
+	if plan == nil || plan.ActivationHeight != height ||
+		plan.Name != appV28UpgradeName || plan.TargetAppVersion != 28 {
+		return nil
+	}
+	if err := app.badgerStore.PreparePublicMemoryStage(ctx, height); err != nil {
+		return fmt.Errorf("prepare app-v28 public-memory stage at height %d: %w", height, err)
+	}
+	return nil
+}
+
+// promotePublicMemoryStage publishes the staged index into consensus state at
+// the activation height, inside the activation block's consensus transaction.
+// The promotion is bound to the committed AppHash of H-1: the staged manifest
+// records the AppHash it was built over, and the store refuses a promotion
+// whose base does not match, so a stage built over any other state cannot be
+// published over this one.
+func (app *SageApp) promotePublicMemoryStage(height int64) error {
+	previous, err := LoadState(app.badgerStore)
+	if err != nil {
+		return fmt.Errorf("read app-v28 promotion predecessor state: %w", err)
+	}
+	if previous.Height != height-1 || len(previous.AppHash) != 32 {
+		return fmt.Errorf(
+			"app-v28 promotion at height %d requires committed height %d with a 32-byte AppHash (got height %d, %d bytes)",
+			height, height-1, previous.Height, len(previous.AppHash),
+		)
+	}
+	if err := app.badgerStore.PromotePublicMemoryStage(height, previous.AppHash); err != nil {
+		return fmt.Errorf("promote app-v28 public-memory stage at height %d: %w", height, err)
+	}
+	return nil
+}
+
+// syncPublicMemoryIndexForBlock folds the public-memory writes of this block
+// into the promoted index, inside the block's consensus transaction. It runs
+// from the activation block onward: H itself keeps app-v27 transaction
+// semantics, but a PUBLIC=0 record it commits is part of the committed set the
+// composite rule covers from H+1, and this transaction is the only one that
+// can still see that write as "changed".
+func (app *SageApp) syncPublicMemoryIndexForBlock(height int64) error {
+	if app.appV28AppliedHeight <= 0 || height < app.appV28AppliedHeight {
+		return nil
+	}
+	if err := app.badgerStore.SyncPublicMemoryChanges(); err != nil {
+		return fmt.Errorf("sync app-v28 public-memory index at height %d: %w", height, err)
 	}
 	return nil
 }

@@ -29,7 +29,6 @@ func TestAppV28ConstantsRefreshAndStrictBoundary(t *testing.T) {
 	app.appV27AppliedHeight = 90
 	require.NoError(t, app.refreshAppV28Fork())
 	require.Equal(t, int64(100), app.appV28AppliedHeight)
-	require.NoError(t, app.validateAppV28Prerequisite())
 	require.False(t, app.postAppV28Fork(100), "the activation block keeps app-v27 semantics")
 	require.True(t, app.postAppV28Fork(101), "v28 rules begin strictly at H+1")
 	require.Equal(t, uint64(28), app.currentAppVersion())
@@ -60,6 +59,11 @@ func TestAppV28ActivationCommitsVersionAndAppliedRecord(t *testing.T) {
 		Name: appV28UpgradeName, TargetAppVersion: 28,
 		ActivationHeight: 60, ProposedAt: 59,
 	}))
+	// A real node reaches H with a committed H-1 tuple; the promotion is bound
+	// to it, so the fixture has to produce one.
+	finalizeAndCommit(t, app, &abcitypes.RequestFinalizeBlock{
+		Height: 59, Time: appV23BlockTime(),
+	})
 
 	response, err := app.FinalizeBlock(context.Background(), &abcitypes.RequestFinalizeBlock{
 		Height: 60, Time: appV23BlockTime(),

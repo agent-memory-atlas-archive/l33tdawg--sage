@@ -3947,6 +3947,12 @@ func (app *SageApp) FinalizeBlock(ctx context.Context, req *abcitypes.RequestFin
 	if err := app.prepareAppV23MigrationStage(req.Height); err != nil {
 		return nil, err
 	}
+	// Same shape for app-v28: the staged public-memory index is built before
+	// the speculative transaction snapshot, so it describes exactly H-1 state.
+	// No-op on every block that is not an app-v28 activation.
+	if err := app.preparePublicMemoryStageForActivation(ctx, req.Height); err != nil {
+		return nil, err
+	}
 
 	scopedStore := app.badgerStore.BeginConsensusTransaction(app.appV20MutationFaultHook)
 	working := app.cloneForAppV20Finalize(scopedStore)
@@ -4615,6 +4621,15 @@ func (app *SageApp) finalizeBlockUncommitted(_ context.Context, req *abcitypes.R
 		}
 		if plan.Name == appV28UpgradeName {
 			app.appV28AppliedHeight = req.Height
+			// The index is committed by the rule that takes effect at H+1, so
+			// the promoted root must be in place by the end of this block. It
+			// is written inside this transaction together with the applied
+			// record: a node that crashes before Commit re-executes H from the
+			// still-pending plan and promotes again, and a node that committed
+			// has both or neither.
+			if promoteErr := app.promotePublicMemoryStage(req.Height); promoteErr != nil {
+				return nil, fmt.Errorf("sage: refuse app-v28 activation at height %d: %w", req.Height, promoteErr)
+			}
 		}
 		if plan.Name == appV12UpgradeName {
 			app.appV12AppliedHeight = req.Height
@@ -4708,8 +4723,19 @@ func (app *SageApp) finalizeBlockUncommitted(_ context.Context, req *abcitypes.R
 	// Update state
 	app.state.Height = req.Height
 
+	// app-v28: fold this block's public-memory writes into the promoted index
+	// before the AppHash is computed, so the composite root committed at the
+	// end of this block describes this block's state and not the previous one.
+	if syncErr := app.syncPublicMemoryIndexForBlock(req.Height); syncErr != nil {
+		return nil, fmt.Errorf("sage: %w", syncErr)
+	}
+
 	// Compute deterministic AppHash under the hash rule in force at this
 	// height. The rules REPLACE each other, newest first:
+	//   app-v28 (composite): the app-v13 rule over the legacy state WITHOUT the
+	//     public-memory index nodes, composed with the sparse public-memory
+	//     root those nodes commit to. The index leaves the legacy tree and
+	//     enters through the composite rule, so the two halves cannot disagree.
 	//   app-v13 (narrow): excludes exactly the three SaveState bookkeeping
 	//     keys — the corrected issue-#40 rule. Idle fixed point, full hash
 	//     cover over gov:*/vote:*/sentinel state.
@@ -4723,6 +4749,8 @@ func (app *SageApp) finalizeBlockUncommitted(_ context.Context, req *abcitypes.R
 	var appHash []byte
 	var err error
 	switch {
+	case app.postAppV28Rules(req.Height):
+		appHash, err = app.badgerStore.ComputePublicMemoryAppHash()
 	case app.postAppV13Rules(req.Height):
 		appHash, err = app.badgerStore.ComputeAppHashExcludingBookkeeping()
 	case app.postAppV12Rules(req.Height):
