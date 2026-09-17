@@ -15,12 +15,24 @@ import (
 // store, which is what the index classifies as part of the public set.
 func publicMemoryTestRecord(t *testing.T, bs *store.BadgerStore, identifier string) {
 	t.Helper()
+	publicMemoryTestRecordWithStatus(t, bs, identifier, "committed")
+}
+
+// publicMemoryTestRecordWithStatus seeds the full projection set a PUBLIC=0
+// record needs (the leaf builder refuses a partial one) at any lifecycle status.
+func publicMemoryTestRecordWithStatus(t *testing.T, bs *store.BadgerStore, identifier, status string) {
+	t.Helper()
 	hash := sha256.Sum256([]byte("app-v28:" + identifier))
-	require.NoError(t, bs.SetMemoryHash(identifier, hash[:], "committed"))
+	require.NoError(t, bs.SetMemoryHash(identifier, hash[:], status))
 	require.NoError(t, bs.SetMemoryAuthor(identifier, strings.Repeat("a", 64)))
 	require.NoError(t, bs.SetMemoryAuthorPrincipal(identifier, "app-v28-principal"))
 	require.NoError(t, bs.SetMemoryDomain(identifier, "public-test"))
 	require.NoError(t, bs.SetMemoryClassification(identifier, 0))
+}
+
+func publicMemoryTestHash(identifier string) []byte {
+	sum := sha256.Sum256([]byte("app-v28:" + identifier))
+	return sum[:]
 }
 
 // stageAppV28Activation puts the app immediately before an app-v28 activation
@@ -66,6 +78,7 @@ func finalizeAndCommit(t *testing.T, app *SageApp, req *abcitypes.RequestFinaliz
 func TestAppV28ActivationPromotesIndexAndKeepsLegacyHashAtH(t *testing.T) {
 	app := setupTestApp(t)
 	publicMemoryTestRecord(t, app.badgerStore, "public-one")
+	publicMemoryTestRecordWithStatus(t, app.badgerStore, "legacy-deprecated", "deprecated")
 	stageAppV28Activation(t, app, 60)
 
 	response := finalizeAndCommit(t, app, &abcitypes.RequestFinalizeBlock{
@@ -77,6 +90,11 @@ func TestAppV28ActivationPromotesIndexAndKeepsLegacyHashAtH(t *testing.T) {
 	require.Equal(t, legacy, response.AppHash,
 		"the activation block still hashes under the app-v27 rule even though the index was promoted in it")
 	require.NoError(t, app.badgerStore.ValidatePublicMemoryStage())
+	require.NoError(t, app.badgerStore.ValidateCoCommitTombstoneStage(),
+		"the same block must promote the co-commit tombstone backfill")
+	tombstoned, err := app.badgerStore.CoCommitTombstoned(publicMemoryTestHash("legacy-deprecated"), "candidate")
+	require.NoError(t, err)
+	require.True(t, tombstoned, "the backfill covers records that left proposed before the fork")
 	proof, err := app.badgerStore.PublicMemoryBranch("public-one")
 	require.NoError(t, err)
 	require.Equal(t, "committed", proof.Leaf.Status)
@@ -126,7 +144,7 @@ func TestAppV28IndexFollowsPostForkBlockWrites(t *testing.T) {
 	transaction := app.badgerStore.BeginConsensusTransaction(nil)
 	working := app.cloneForAppV20Finalize(transaction)
 	require.NoError(t, transaction.SetMemoryStatusPreservingHash("public-one", "challenged"))
-	require.NoError(t, working.syncPublicMemoryIndexForBlock(61))
+	require.NoError(t, working.syncAppV28IndexesForBlock(61))
 	require.NoError(t, transaction.CommitConsensusTransaction())
 
 	proof, err := app.badgerStore.PublicMemoryBranch("public-one")
