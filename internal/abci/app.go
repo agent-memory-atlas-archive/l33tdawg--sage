@@ -673,6 +673,10 @@ type SageApp struct {
 	// static shared domains and canonical omitted task-status normalization.
 	// The activation block remains under app-v26 rules; v27 semantics begin H+1.
 	appV27AppliedHeight int64 // 0 => fork dormant
+	// appV28AppliedHeight gates the AppHash-covered public-memory commitment
+	// and the consensus-side co-commit tombstone rule. The activation block
+	// remains under app-v27 rules; v28 semantics begin strictly at H+1.
+	appV28AppliedHeight int64 // 0 => fork dormant
 	// appV23GenesisActive is loaded only from the dedicated, AppHash-covered
 	// dual-signed genesis activation marker. It is separate from applied-height
 	// upgrades because a v23-born chain has no historical activation block.
@@ -855,6 +859,7 @@ const appV24UpgradeName = "app-v24"
 const appV25UpgradeName = "app-v25"
 const appV26UpgradeName = "app-v26"
 const appV27UpgradeName = "app-v27"
+const appV28UpgradeName = "app-v28"
 
 // governanceDelegationDomainStateKey holds the stable, consensus-derived
 // domain that post-app-v20 governance authorizations must sign. It is approved
@@ -2418,6 +2423,16 @@ func NewSageApp(badgerPath string, postgresURL string, logger zerolog.Logger) (*
 		_ = bs.CloseBadger()
 		return nil, invariantErr
 	}
+	if invariantErr := app.refreshAppV28Fork(); invariantErr != nil {
+		_ = ps.Close()
+		_ = bs.CloseBadger()
+		return nil, invariantErr
+	}
+	if invariantErr := app.validateAppV28Prerequisite(); invariantErr != nil {
+		_ = ps.Close()
+		_ = bs.CloseBadger()
+		return nil, invariantErr
+	}
 	app.reconcilePoEForkMonotonicity()
 
 	// Reload persisted validators from BadgerDB (survives restart)
@@ -2529,6 +2544,12 @@ func NewSageAppWithStores(bs *store.BadgerStore, offchain store.OffchainStore, l
 	if invariantErr := app.validateAppV27Prerequisite(); invariantErr != nil {
 		return nil, invariantErr
 	}
+	if invariantErr := app.refreshAppV28Fork(); invariantErr != nil {
+		return nil, invariantErr
+	}
+	if invariantErr := app.validateAppV28Prerequisite(); invariantErr != nil {
+		return nil, invariantErr
+	}
 	app.reconcilePoEForkMonotonicity()
 
 	persistedVals, err := bs.LoadValidators()
@@ -2607,6 +2628,8 @@ func restoredValidatorInfo(id string, power int64) *validator.ValidatorInfo {
 // 6 <= 7, so the watchdog stops without re-proposing.
 func (app *SageApp) currentAppVersion() uint64 {
 	switch {
+	case app.appV28AppliedHeight > 0:
+		return 28 // app-v28 (public-memory commitment + consensus co-commit rule) — highest gate
 	case app.appV27AppliedHeight > 0:
 		return 27 // app-v27 (shared-author lifecycle + task proof normalization) — highest gate
 	case app.appV26AppliedHeight > 0:
@@ -2666,21 +2689,36 @@ func (app *SageApp) currentAppVersion() uint64 {
 	}
 }
 
-// maxSupportedAppVersion is the highest app version this binary has a compiled
-// fork gate for (currently app-v27). It is the readiness ceiling for upgrade
-// auto-voting: a validator must never vote to activate an upgrade it cannot
-// execute — doing so would commit consensus version.app=N while the binary
-// still runs at N-1, halting the chain on the next CometBFT handshake (the
-// maxSupportedAppVersion footgun). Bump this in lockstep with every new
-// appV<N>UpgradeName fork gate added above.
+// maxSupportedAppVersion is the readiness ceiling for upgrade auto-voting
+// (currently app-v27): a validator must never vote to activate an upgrade it
+// cannot execute — doing so would commit consensus version.app=N while the
+// binary still runs at N-1, halting the chain on the next CometBFT handshake
+// (the maxSupportedAppVersion footgun). Bump this in lockstep with every new
+// appV<N>UpgradeName fork gate, EXCEPT for a gate that deliberately ships
+// dormant: app-v28's gate and applied-height refresh are compiled ahead of its
+// activation evidence (see docs/reference/concepts/app-v28-lifecycle.md), and
+// the auto-voter must abstain on it until the evidence lands, exactly as
+// app-v7 is governance-activated only.
 const maxSupportedAppVersion uint64 = 27
 
-// MaxSupportedAppVersion returns the highest app version this binary has a
-// compiled fork gate for. Operator tooling (cmd/sage-gui `upgrade propose`)
-// reads it to refuse proposing a target this binary cannot execute — the same
-// readiness ceiling the auto-voter enforces via ActiveUpgradeVote. Exported
-// because cmd/sage-gui lives outside this package; see maxSupportedAppVersion
-// for the footgun this guards against.
+// maxCompiledAppVersion is the highest app version this binary has a compiled
+// fork gate for (currently app-v28). It bounds what Info() may report and what
+// an explicitly approved, quorum-decided upgrade plan may activate; it is
+// deliberately allowed to run one step ahead of maxSupportedAppVersion so a
+// gate can be reviewed and tested before the auto-voter is willing to fire on
+// it. The two converge in the change that carries the activation evidence.
+const maxCompiledAppVersion uint64 = 28
+
+// MaxSupportedAppVersion returns the auto-vote readiness ceiling, which is the
+// highest app version this binary is prepared to activate unattended. Operator
+// tooling (cmd/sage-gui `upgrade propose`, `upgrade status`, `upgrade
+// preflight`) reads it to refuse proposing a target the auto-voter would not
+// vote for — the same ceiling ActiveUpgradeVote enforces. A compiled gate can
+// sit above it deliberately while its activation evidence is gathered
+// (maxCompiledAppVersion), and such a gate can only be activated by an
+// explicitly proposed plan that reaches quorum, because the auto-voter
+// abstains and no personal node advances itself. Exported because cmd/sage-gui lives outside this
+// package; see maxSupportedAppVersion for the footgun this guards against.
 func MaxSupportedAppVersion() uint64 { return maxSupportedAppVersion }
 
 // SetExpectedGovernanceDelegationDomain derives the app-v20 domain from the
@@ -2982,6 +3020,19 @@ func (app *SageApp) ActiveUpgradeVote() (proposalID string, targetVersion uint64
 		} else if _, predecessorErr := app.validateAppV27Predecessor(); predecessorErr != nil {
 			app.logger.Warn().Err(predecessorErr).Str("proposal_id", prop.ProposalID).
 				Msg("app-v27 predecessor is invalid; skipping auto-vote")
+			supported = false
+		}
+	}
+	if payload.Name == appV28UpgradeName && payload.TargetAppVersion == 28 {
+		if app.currentAppVersion() != 27 {
+			app.logger.Warn().
+				Str("proposal_id", prop.ProposalID).
+				Uint64("current_app_version", app.currentAppVersion()).
+				Msg("app-v28 upgrade requires app-v27 as its immediate predecessor; skipping auto-vote")
+			supported = false
+		} else if _, predecessorErr := app.validateAppV28Predecessor(); predecessorErr != nil {
+			app.logger.Warn().Err(predecessorErr).Str("proposal_id", prop.ProposalID).
+				Msg("app-v28 predecessor is invalid; skipping auto-vote")
 			supported = false
 		}
 	}
@@ -3696,6 +3747,7 @@ func (app *SageApp) cloneForAppV20Finalize(scopedStore *store.BadgerStore) *Sage
 		appV25AppliedHeight:      app.appV25AppliedHeight,
 		appV26AppliedHeight:      app.appV26AppliedHeight,
 		appV27AppliedHeight:      app.appV27AppliedHeight,
+		appV28AppliedHeight:      app.appV28AppliedHeight,
 		appV23GenesisActive:      app.appV23GenesisActive,
 		retainBlocks:             app.retainBlocks,
 		expectedGovernanceDomain: app.expectedGovernanceDelegationDomain(),
@@ -3743,6 +3795,7 @@ func (app *SageApp) publishAppV20FinalizeLocked(clone *SageApp) {
 	app.appV25AppliedHeight = clone.appV25AppliedHeight
 	app.appV26AppliedHeight = clone.appV26AppliedHeight
 	app.appV27AppliedHeight = clone.appV27AppliedHeight
+	app.appV28AppliedHeight = clone.appV28AppliedHeight
 	app.appV23GenesisActive = clone.appV23GenesisActive
 }
 
@@ -4414,6 +4467,26 @@ func (app *SageApp) finalizeBlockUncommitted(_ context.Context, req *abcitypes.R
 				)
 			}
 		}
+		if plan.Name == appV28UpgradeName {
+			if plan.TargetAppVersion != 28 {
+				return nil, fmt.Errorf(
+					"sage: refuse malformed app-v28 activation at height %d: target_app_version=%d",
+					req.Height, plan.TargetAppVersion,
+				)
+			}
+			if current := app.currentAppVersion(); current != 27 {
+				return nil, fmt.Errorf(
+					"sage: refuse app-v28 activation at height %d: current committed app version is %d, want 27",
+					req.Height, current,
+				)
+			}
+			if _, predecessorErr := app.validateAppV28Predecessor(); predecessorErr != nil {
+				return nil, fmt.Errorf(
+					"sage: refuse app-v28 activation at height %d: invalid predecessor: %w",
+					req.Height, predecessorErr,
+				)
+			}
+		}
 		// Version-non-regression floor (deterministic on every replica): never
 		// commit a consensus version.app lower than the chain's current app
 		// version. app-v7 (content-validation) is an INDEPENDENT gate that can be
@@ -4540,6 +4613,9 @@ func (app *SageApp) finalizeBlockUncommitted(_ context.Context, req *abcitypes.R
 		if plan.Name == appV27UpgradeName {
 			app.appV27AppliedHeight = req.Height
 		}
+		if plan.Name == appV28UpgradeName {
+			app.appV28AppliedHeight = req.Height
+		}
 		if plan.Name == appV12UpgradeName {
 			app.appV12AppliedHeight = req.Height
 		}
@@ -4557,20 +4633,36 @@ func (app *SageApp) finalizeBlockUncommitted(_ context.Context, req *abcitypes.R
 		// lower gate so postV8_4Fork ⟹ postV8_3Fork ⟹ … holds. No-op for a
 		// sequentially-upgraded chain. See reconcilePoEForkMonotonicity.
 		app.reconcilePoEForkMonotonicity()
-		// Diagnostic for the maxSupportedAppVersion footgun: if this activation
-		// commits an app version this binary has no compiled fork gate for, the
-		// node WILL halt on its next CometBFT handshake (consensus version.app
-		// outruns currentAppVersion()). Surface it loudly here so the operator
-		// sees a clear cause instead of a cryptic handshake-version mismatch.
-		// (The auto-vote readiness gate normally prevents an unsupported upgrade
-		// from ever reaching quorum; this catches a hand-voted or forced plan.)
+		// Two diagnostics for the two ceilings, in the order they diverge.
+		//
+		// 1. Above the auto-vote ceiling but within what this binary can execute:
+		// a deliberate dormant gate (app-v28 today) activated through an explicit
+		// quorum-approved plan. Nothing halts — currentAppVersion() reports the
+		// gate — but every node's auto-voter abstains from here on, so surface
+		// the state instead of leaving it to be discovered from vote silence.
+		//
+		// 2. Above maxCompiledAppVersion: this activation commits an app version
+		// this binary has no compiled fork gate for, and the node WILL halt on
+		// its next CometBFT handshake (consensus version.app outruns
+		// currentAppVersion()). Surface it loudly so the operator sees a clear
+		// cause instead of a cryptic handshake-version mismatch. (The auto-vote
+		// readiness gate normally prevents an unsupported upgrade from ever
+		// reaching quorum; this catches a hand-voted or forced plan.)
 		if plan.TargetAppVersion > maxSupportedAppVersion {
-			app.logger.Error().
+			app.logger.Warn().
 				Str("name", plan.Name).
 				Uint64("target_app_version", plan.TargetAppVersion).
 				Uint64("max_supported_app_version", maxSupportedAppVersion).
 				Int64("height", req.Height).
-				Msg("ACTIVATED UPGRADE EXCEEDS THIS BINARY'S MAX SUPPORTED APP VERSION — node will halt on restart; deploy a binary that supports this app version")
+				Msg("activated upgrade exceeds this binary's auto-vote ceiling — the auto-voter abstains on it from here on; confirm the activation was intended and that this binary carries the gate")
+		}
+		if plan.TargetAppVersion > maxCompiledAppVersion {
+			app.logger.Error().
+				Str("name", plan.Name).
+				Uint64("target_app_version", plan.TargetAppVersion).
+				Uint64("max_compiled_app_version", maxCompiledAppVersion).
+				Int64("height", req.Height).
+				Msg("ACTIVATED UPGRADE EXCEEDS THIS BINARY'S HIGHEST COMPILED APP VERSION — node will halt on restart; deploy a binary that supports this app version")
 		}
 		app.logger.Info().
 			Str("name", plan.Name).
@@ -11524,6 +11616,17 @@ func (app *SageApp) applyUpgradeProposal(proposal *governance.ProposalState, hei
 			return fmt.Errorf("app-v27 upgrade has invalid predecessor: %w", predecessorErr)
 		}
 	}
+	if p.Name == appV28UpgradeName {
+		if p.TargetAppVersion != 28 {
+			return fmt.Errorf("app-v28 upgrade has target version %d, want 28", p.TargetAppVersion)
+		}
+		if current := app.currentAppVersion(); current != 27 {
+			return fmt.Errorf("app-v28 upgrade requires current app version 27, got %d", current)
+		}
+		if _, predecessorErr := app.validateAppV28Predecessor(); predecessorErr != nil {
+			return fmt.Errorf("app-v28 upgrade has invalid predecessor: %w", predecessorErr)
+		}
+	}
 
 	// Execution-height regression re-guard: the chain's committed app version
 	// may have advanced (another upgrade activated) between propose and quorum.
@@ -11735,6 +11838,20 @@ func (app *SageApp) processUpgradePropose(parsedTx *tx.ParsedTx, height int64, b
 		if _, predecessorErr := app.validateAppV27Predecessor(); predecessorErr != nil {
 			return &abcitypes.ExecTxResult{Code: 47, Log: fmt.Sprintf(
 				"upgrade propose: app-v27 predecessor is invalid: %v", predecessorErr)}
+		}
+	}
+	if prop.Name == appV28UpgradeName {
+		if prop.TargetAppVersion != 28 {
+			return &abcitypes.ExecTxResult{Code: 47, Log: fmt.Sprintf(
+				"upgrade propose: app-v28 requires target_app_version 28 (got %d)", prop.TargetAppVersion)}
+		}
+		if current := app.currentAppVersion(); current != 27 {
+			return &abcitypes.ExecTxResult{Code: 47, Log: fmt.Sprintf(
+				"upgrade propose: app-v28 requires current committed app version 27 (got %d)", current)}
+		}
+		if _, predecessorErr := app.validateAppV28Predecessor(); predecessorErr != nil {
+			return &abcitypes.ExecTxResult{Code: 47, Log: fmt.Sprintf(
+				"upgrade propose: app-v28 predecessor is invalid: %v", predecessorErr)}
 		}
 	}
 
