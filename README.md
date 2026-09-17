@@ -48,7 +48,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.20.5`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.21.0`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -207,6 +207,14 @@ software updates, and encryption controls. Ordinary agent identity replacement
 uses re-enrollment; historical memory authorship is preserved.
 
 ---
+
+## What's New in v11.21.0
+
+**The 11.21 line opens, and the shell that admits it ships with it.** The daemon is the v11.20.5 build: a peer whose address moved repairs its own route, a flapping peer's windows are spent on the backlog, and recall names the confidence floor that filtered a result instead of returning an empty answer. What is new is the line itself. The SSCP compatibility range lives in the shipped native shell, not in the daemon, so a minor bump is the release that has to widen it: the shell now accepts v11.10 through v11.21 daemons, which is what lets the fixes after this one ship as patch releases instead of a rebuilt shell each time. If you run the daemon and the desktop app as separate installs, update both — an 11.21 daemon under the 11.20.5 shell is refused control by design, and that refusal is the gate doing its job rather than a fault.
+
+No consensus change or chain migration; app-v27 remains the ceiling.
+
+Container: `ghcr.io/l33tdawg/sage:11.21.0`. SDK 11.21.0.
 
 ## What's New in v11.20.5
 
