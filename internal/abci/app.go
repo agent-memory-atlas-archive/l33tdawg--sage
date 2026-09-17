@@ -3950,7 +3950,7 @@ func (app *SageApp) FinalizeBlock(ctx context.Context, req *abcitypes.RequestFin
 	// Same shape for app-v28: the staged public-memory index is built before
 	// the speculative transaction snapshot, so it describes exactly H-1 state.
 	// No-op on every block that is not an app-v28 activation.
-	if err := app.preparePublicMemoryStageForActivation(ctx, req.Height); err != nil {
+	if err := app.prepareAppV28StagesForActivation(ctx, req.Height); err != nil {
 		return nil, err
 	}
 
@@ -4627,7 +4627,7 @@ func (app *SageApp) finalizeBlockUncommitted(_ context.Context, req *abcitypes.R
 			// record: a node that crashes before Commit re-executes H from the
 			// still-pending plan and promotes again, and a node that committed
 			// has both or neither.
-			if promoteErr := app.promotePublicMemoryStage(req.Height); promoteErr != nil {
+			if promoteErr := app.promoteAppV28Indexes(req.Height); promoteErr != nil {
 				return nil, fmt.Errorf("sage: refuse app-v28 activation at height %d: %w", req.Height, promoteErr)
 			}
 		}
@@ -4726,7 +4726,7 @@ func (app *SageApp) finalizeBlockUncommitted(_ context.Context, req *abcitypes.R
 	// app-v28: fold this block's public-memory writes into the promoted index
 	// before the AppHash is computed, so the composite root committed at the
 	// end of this block describes this block's state and not the previous one.
-	if syncErr := app.syncPublicMemoryIndexForBlock(req.Height); syncErr != nil {
+	if syncErr := app.syncAppV28IndexesForBlock(req.Height); syncErr != nil {
 		return nil, fmt.Errorf("sage: %w", syncErr)
 	}
 
@@ -6011,6 +6011,30 @@ func (app *SageApp) processCoCommitSubmit(parsedTx *tx.ParsedTx, height int64, b
 	//     This defeats both the denial and the hijack variants of the collision.
 	if existingCore, ccErr := app.badgerStore.GetCoCommitCore(sharedID); ccErr == nil && len(existingCore) > 0 {
 		return &abcitypes.ExecTxResult{Code: 98, Log: fmt.Sprintf("co-commit %s already committed on this chain", sharedID)}
+	}
+
+	// app-v28: the tombstone rule, enforced by consensus instead of only at the
+	// local REST submission boundary. A co-commit never consults the voter — block
+	// inclusion is decisive — so the content-hash dedup that keeps a rejected
+	// memory's exact bytes out of the store does not run on this path, and a
+	// directly broadcast envelope never meets the REST guard at all. The reverse
+	// index makes the predicate a bounded lookup: does any memory OTHER than this
+	// SharedID carry these exact bytes and a status that is no longer proposed?
+	// (The exclusion is the same one the REST guard applies, so an idempotent
+	// re-send or a squat-reclaim of this id is still decided by its own record.)
+	//
+	// Strict H+1 boundary: the activation block keeps app-v27 semantics, and the
+	// index it promotes describes H-1 state. A store error refuses rather than
+	// allowing: this is a consensus rule, and "the index is unreadable" is a node
+	// fault, not a reason to admit bytes the chain agreed never to re-admit.
+	if app.postAppV28Rules(height) {
+		tombstoned, tombErr := app.badgerStore.CoCommitTombstoned(env.ContentHash, sharedID)
+		if tombErr != nil {
+			return &abcitypes.ExecTxResult{Code: 99, Log: fmt.Sprintf("co-commit: tombstone lookup failed: %v", tombErr)}
+		}
+		if tombstoned {
+			return &abcitypes.ExecTxResult{Code: 97, Log: "co-commit: content hash matches a different memory that has already left proposed (deprecated, challenged or committed) — reinstate the original memory, or change the content"}
+		}
 	}
 
 	// app-v17 (C5): squat-reclaim stale-vote hygiene. The cocommit:core guard above

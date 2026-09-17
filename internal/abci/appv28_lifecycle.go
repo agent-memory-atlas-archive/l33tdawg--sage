@@ -86,21 +86,29 @@ func (app *SageApp) validateAppV28Prerequisite() error {
 	if err := app.badgerStore.ValidatePublicMemoryStage(); err != nil {
 		return fmt.Errorf("applied %s has an invalid public-memory stage: %w", appV28UpgradeName, err)
 	}
+	if err := app.badgerStore.ValidateCoCommitTombstoneStage(); err != nil {
+		return fmt.Errorf("applied %s has an invalid co-commit tombstone stage: %w", appV28UpgradeName, err)
+	}
 	return nil
 }
 
-// preparePublicMemoryStageForActivation builds the durable, AppHash-excluded
-// staged copy of the sparse public-memory index for an activation block that
-// is about to execute, mirroring prepareAppV23MigrationStage: it runs BEFORE
-// the speculative consensus transaction takes its snapshot, so the staged
-// index describes exactly H-1 state and no transaction accepted at H can
-// invalidate it. The stage itself is invisible to every AppHash rule (its keys
-// live under the stage prefix), so a node that stages and then re-executes the
-// block after a crash produces byte-identical state.
+// prepareAppV28StagesForActivation builds the durable, AppHash-excluded staged
+// copies of both app-v28 indexes for an activation block that is about to
+// execute, mirroring prepareAppV23MigrationStage: it runs BEFORE the
+// speculative consensus transaction takes its snapshot, so each stage
+// describes exactly H-1 state and no transaction accepted at H can invalidate
+// it. The stages are invisible to every AppHash rule (their keys live under
+// stage prefixes), so a node that stages and then re-executes the block after a
+// crash produces byte-identical state.
+//
+// The sparse public-memory index is staged because the composite AppHash rule
+// commits to its root; the co-commit tombstone index is staged because its
+// backfill is a full scan of every memory, which must not run inside the
+// activation block's transaction.
 //
 // It is a no-op on every block that is not an app-v28 activation, which is why
 // nothing changes for a chain that has not opened the fork.
-func (app *SageApp) preparePublicMemoryStageForActivation(ctx context.Context, height int64) error {
+func (app *SageApp) prepareAppV28StagesForActivation(ctx context.Context, height int64) error {
 	plan, err := app.badgerStore.GetUpgradePlan()
 	if errors.Is(err, store.ErrNoUpgradePlan) {
 		return nil
@@ -118,16 +126,20 @@ func (app *SageApp) preparePublicMemoryStageForActivation(ctx context.Context, h
 	if err := app.badgerStore.PreparePublicMemoryStage(ctx, height); err != nil {
 		return fmt.Errorf("prepare app-v28 public-memory stage at height %d: %w", height, err)
 	}
+	if err := app.badgerStore.PrepareCoCommitTombstoneStage(ctx, height); err != nil {
+		return fmt.Errorf("prepare app-v28 co-commit tombstone stage at height %d: %w", height, err)
+	}
 	return nil
 }
 
-// promotePublicMemoryStage publishes the staged index into consensus state at
-// the activation height, inside the activation block's consensus transaction.
-// The promotion is bound to the committed AppHash of H-1: the staged manifest
-// records the AppHash it was built over, and the store refuses a promotion
+// promoteAppV28Indexes publishes both staged indexes into consensus state at the
+// activation height, inside the activation block's consensus transaction. Each
+// promotion is bound to the committed AppHash of H-1: the staged manifests
+// record the AppHash they were built over, and the store refuses a promotion
 // whose base does not match, so a stage built over any other state cannot be
-// published over this one.
-func (app *SageApp) promotePublicMemoryStage(height int64) error {
+// published over this one. The co-commit marker written here is also what turns
+// on the index maintenance for later blocks.
+func (app *SageApp) promoteAppV28Indexes(height int64) error {
 	previous, err := LoadState(app.badgerStore)
 	if err != nil {
 		return fmt.Errorf("read app-v28 promotion predecessor state: %w", err)
@@ -141,21 +153,34 @@ func (app *SageApp) promotePublicMemoryStage(height int64) error {
 	if err := app.badgerStore.PromotePublicMemoryStage(height, previous.AppHash); err != nil {
 		return fmt.Errorf("promote app-v28 public-memory stage at height %d: %w", height, err)
 	}
+	if err := app.badgerStore.PromoteCoCommitTombstoneStage(height, previous.AppHash); err != nil {
+		return fmt.Errorf("promote app-v28 co-commit tombstone stage at height %d: %w", height, err)
+	}
 	return nil
 }
 
-// syncPublicMemoryIndexForBlock folds the public-memory writes of this block
-// into the promoted index, inside the block's consensus transaction. It runs
-// from the activation block onward: H itself keeps app-v27 transaction
-// semantics, but a PUBLIC=0 record it commits is part of the committed set the
-// composite rule covers from H+1, and this transaction is the only one that
-// can still see that write as "changed".
-func (app *SageApp) syncPublicMemoryIndexForBlock(height int64) error {
+// syncAppV28IndexesForBlock folds the writes of this block into the promoted
+// indexes, inside the block's consensus transaction. It runs from the
+// activation block onward: H itself keeps app-v27 transaction semantics, but a
+// PUBLIC=0 record it commits is part of the committed set the composite rule
+// covers from H+1, and this transaction is the only one that can still see that
+// write as "changed".
+//
+// The co-commit tombstone index is maintained inline by every memory write once
+// its promotion marker exists, so only the activation block — whose writes ran
+// BEFORE that marker was written, later in the same block — needs the explicit
+// fold.
+func (app *SageApp) syncAppV28IndexesForBlock(height int64) error {
 	if app.appV28AppliedHeight <= 0 || height < app.appV28AppliedHeight {
 		return nil
 	}
 	if err := app.badgerStore.SyncPublicMemoryChanges(); err != nil {
 		return fmt.Errorf("sync app-v28 public-memory index at height %d: %w", height, err)
+	}
+	if height == app.appV28AppliedHeight {
+		if err := app.badgerStore.SyncCoCommitTombstoneChanges(); err != nil {
+			return fmt.Errorf("sync app-v28 co-commit tombstone index at height %d: %w", height, err)
+		}
 	}
 	return nil
 }
