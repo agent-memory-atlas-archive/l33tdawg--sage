@@ -193,7 +193,7 @@ func main() {
 	case "mcp-token":
 		err = runMCPToken()
 	case "version":
-		fmt.Printf("sage-gui %s (commit %s, built %s, max-app-v%d)\n", version, commit, date, sageabci.MaxSupportedAppVersion())
+		fmt.Printf("sage-gui %s (commit %s, built %s, max-app-v%d, auto-vote-v%d)\n", version, commit, date, sageabci.MaxCompiledAppVersion(), sageabci.MaxSupportedAppVersion())
 	case "help", "--help", "-h":
 		printUsage()
 	default:

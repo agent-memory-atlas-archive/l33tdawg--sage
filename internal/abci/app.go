@@ -2721,6 +2721,13 @@ const maxCompiledAppVersion uint64 = 28
 // package; see maxSupportedAppVersion for the footgun this guards against.
 func MaxSupportedAppVersion() uint64 { return maxSupportedAppVersion }
 
+// MaxCompiledAppVersion returns the highest app version this binary has a
+// compiled fork gate for. It is what compatibility checks must use: a chain
+// whose committed version is at or below this value can be served by this
+// binary, even when the gate is still dormant below the auto-vote ceiling. The
+// two differ only while a gate is compiled ahead of its activation evidence.
+func MaxCompiledAppVersion() uint64 { return maxCompiledAppVersion }
+
 // SetExpectedGovernanceDelegationDomain derives the app-v20 domain from the
 // runtime's authoritative CometBFT chain_id. It affects only whether this node
 // auto-votes an upgrade; it never enters FinalizeBlock or AppHash computation.

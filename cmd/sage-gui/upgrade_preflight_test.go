@@ -133,7 +133,7 @@ func TestStoppedUpgradeGovernanceGuardUsesCompatibilityInsteadOfPresence(t *test
 			status: &sageabci.UpgradeGovernanceStatus{
 				CurrentAppVersion: 27,
 				PendingPlan: &sageabci.UpgradeGovernancePendingPlan{
-					Name: "app-v28", TargetAppVersion: 28, ActivationHeight: 900,
+					Name: "app-v29", TargetAppVersion: 29, ActivationHeight: 900,
 				},
 			},
 			wantError: true,
