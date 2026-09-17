@@ -105,8 +105,14 @@ func runUpgradePreflight(args []string) error {
 	if err != nil {
 		return fmt.Errorf("read persisted app state: %w", err)
 	}
+	// Two different questions, two different ceilings: can this binary SERVE
+	// this chain (compiled gates), and how far will its auto-voter go on its own
+	// (the readiness ceiling)? A dormant gate such as app-v28 is compiled and
+	// servable while the auto-voter still abstains, so compatibility must use the
+	// compiled ceiling or a node that CAN run the chain is reported incompatible.
 	maxSupported := sageabci.MaxSupportedAppVersion()
-	reached := highestAppliedVersion(bs, maxSupported)
+	maxCompiled := sageabci.MaxCompiledAppVersion()
+	reached := highestAppliedVersion(bs, maxCompiled)
 	genesis, genesisErr := bs.GetAppV23GenesisActivation()
 	currentAppVersion := reached
 	if genesisErr == nil && genesis != nil && currentAppVersion < 23 {
@@ -123,9 +129,12 @@ func runUpgradePreflight(args []string) error {
 	fmt.Printf("SAGE upgrade preflight\n")
 	fmt.Printf("  data dir        : %s\n", resolvedDataDir)
 	fmt.Printf("  persisted height: %d\n", state.Height)
-	fmt.Printf("  binary supports : up to app-v%d\n", maxSupported)
+	fmt.Printf("  binary supports : up to app-v%d\n", maxCompiled)
+	if maxCompiled != maxSupported {
+		fmt.Printf("  auto-vote ceiling: app-v%d (a target above this needs explicit votes)\n", maxSupported)
+	}
 	fmt.Printf("  this binary     : sage-gui %s\n\n", version)
-	if compatibilityErr := printStoppedUpgradeGovernanceStatus(governanceStatus, maxSupported); compatibilityErr != nil {
+	if compatibilityErr := printStoppedUpgradeGovernanceStatus(governanceStatus, maxCompiled); compatibilityErr != nil {
 		return fmt.Errorf("upgrade preflight: binary replacement is incompatible with canonical upgrade governance state: %w", compatibilityErr)
 	}
 
@@ -134,7 +143,7 @@ func runUpgradePreflight(args []string) error {
 	// returns early on appV23GenesisActive). Applying the ladder to it would be
 	// a pure false alarm.
 	if genesisErr == nil && genesis != nil {
-		return reportDirectV23Genesis(bs, maxSupported)
+		return reportDirectV23Genesis(bs, maxCompiled)
 	}
 
 	fmt.Printf("Highest applied activation record: app-v%d\n\n", reached)
@@ -163,11 +172,11 @@ func runUpgradePreflight(args []string) error {
 		fmt.Println("  No agent holds Role==admin on chain, so the migration has no legacy Admin")
 		fmt.Println("  to promote to the singleton CEREBRUM Root.")
 		fmt.Println("  Register or materialize an admin agent before starting the climb.")
-	case reached >= maxSupported:
-		fmt.Printf("VERDICT: nothing to do — the chain is already at app-v%d, this binary's ceiling.\n", maxSupported)
+	case reached >= maxCompiled:
+		fmt.Printf("VERDICT: nothing to do — the chain is already at app-v%d, this binary's ceiling.\n", maxCompiled)
 	default:
-		fmt.Printf("VERDICT: clear to climb from app-v%d to app-v%d.\n", reached, maxSupported)
-		fmt.Printf("  %d fork activation(s) remain. Each waits out a governance delay of at least\n", maxSupported-reached)
+		fmt.Printf("VERDICT: clear to climb from app-v%d to app-v%d.\n", reached, maxCompiled)
+		fmt.Printf("  %d fork activation(s) remain. Each waits out a governance delay of at least\n", maxCompiled-reached)
 		fmt.Println("  200 blocks, so the full climb takes a while — see docs/UPGRADING.md.")
 	}
 
@@ -320,8 +329,8 @@ func explainBadgerOpenFailure(badgerPath string, err error) error {
 
 // reportDirectV23Genesis handles chains born at app-v23, which have no
 // app-v6..v21 lineage by design.
-func reportDirectV23Genesis(bs *store.BadgerStore, maxSupported uint64) error {
-	reached := highestAppliedVersion(bs, maxSupported)
+func reportDirectV23Genesis(bs *store.BadgerStore, ceiling uint64) error {
+	reached := highestAppliedVersion(bs, ceiling)
 	if reached < 23 {
 		reached = 23
 	}
@@ -329,10 +338,10 @@ func reportDirectV23Genesis(bs *store.BadgerStore, maxSupported uint64) error {
 	fmt.Println("The app-v22 predecessor ladder does not apply to it — consensus exempts")
 	fmt.Println("direct-v23 genesis chains from that invariant.")
 	fmt.Printf("\nHighest applied activation record: app-v%d\n\n", reached)
-	if reached >= maxSupported {
-		fmt.Printf("VERDICT: nothing to do — the chain is already at app-v%d, this binary's ceiling.\n", maxSupported)
+	if reached >= ceiling {
+		fmt.Printf("VERDICT: nothing to do — the chain is already at app-v%d, this binary's ceiling.\n", ceiling)
 	} else {
-		fmt.Printf("VERDICT: clear to climb from app-v%d to app-v%d.\n", reached, maxSupported)
+		fmt.Printf("VERDICT: clear to climb from app-v%d to app-v%d.\n", reached, ceiling)
 	}
 	fmt.Println()
 	fmt.Println("Full procedure: docs/UPGRADING.md")

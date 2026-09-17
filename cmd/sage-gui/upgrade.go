@@ -82,7 +82,7 @@ func printUpgradeUsage() {
 	// Derive the ladder's top rung from the binary instead of hardcoding it —
 	// the help text drifted stale once before (it still said app-v10 after the
 	// v11+ forks shipped).
-	maxV := sageabci.MaxSupportedAppVersion()
+	maxV := sageabci.MaxCompiledAppVersion()
 	fmt.Printf(`Usage: sage-gui upgrade <subcommand>
 
 Activate the governance-gated app-version consensus forks (app-v7…app-v%d).
@@ -158,9 +158,13 @@ func runUpgradeStatus(args []string) error {
 	}
 	current := governanceStatus.CurrentAppVersion
 	maxV := sageabci.MaxSupportedAppVersion()
+	maxCompiled := sageabci.MaxCompiledAppVersion()
 
 	fmt.Printf("Chain app version : %d (app-v%d)\n", current, current)
-	fmt.Printf("Binary supports   : up to app-v%d\n", maxV)
+	fmt.Printf("Binary supports   : up to app-v%d (compiled)\n", maxCompiled)
+	if maxCompiled != maxV {
+		fmt.Printf("Auto-vote ceiling : app-v%d — a target above it needs explicitly voted validators\n", maxV)
+	}
 	if governanceStatus.PendingPlan == nil {
 		fmt.Println("Pending plan      : none")
 	} else {
@@ -179,7 +183,7 @@ func runUpgradeStatus(args []string) error {
 		}
 		fmt.Println(")")
 	}
-	if current >= maxV {
+	if current >= maxCompiled {
 		fmt.Println("Next fork         : none — chain is at the highest version this binary supports")
 		return nil
 	}
@@ -298,9 +302,24 @@ func runUpgradePropose(args []string) error {
 		}
 	}
 
-	canonical, err := validateUpgradeTarget(current, *target, sageabci.MaxSupportedAppVersion(), *name)
+	canonical, err := validateUpgradeTarget(current, *target, sageabci.MaxCompiledAppVersion(), *name)
 	if err != nil {
 		return err
+	}
+	// A target between the auto-vote ceiling and the compiled ceiling is a
+	// deliberately dormant gate: this binary can execute it, but every node's
+	// auto-voter abstains, so the plan only activates if validators vote for it
+	// explicitly. Say that plainly instead of letting an operator discover it
+	// from vote silence.
+	if autoVoteCeiling := sageabci.MaxSupportedAppVersion(); *target > autoVoteCeiling {
+		fmt.Printf("WARNING: app-v%d is compiled but DORMANT in this binary.\n", *target)
+		fmt.Printf("  The auto-voter abstains on every node until the readiness ceiling\n")
+		fmt.Printf("  (currently app-v%d) is raised in the release that carries the activation\n", autoVoteCeiling)
+		fmt.Printf("  evidence. The plan will NOT reach quorum on its own — every validator\n")
+		fmt.Println("  must cast an explicit vote, and the activation takes effect at H+1.")
+		if !*yes {
+			fmt.Println()
+		}
 	}
 	var chainID string
 	if *target == 20 {

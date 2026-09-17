@@ -508,10 +508,12 @@ func TestValidateUpgradeTarget_RespectsBinaryCeiling(t *testing.T) {
 
 // TestPrintUpgradeUsage_CurrentLadder pins the help text to the binary's real
 // fork ladder: it once said the forks end at app-v10 long after v11+ shipped.
-// The top rung must be derived from MaxSupportedAppVersion (so it can never go
-// stale again) and the one-at-a-time sequential rule must be stated.
+// The top rung must be derived from the binary's COMPILED ladder (so it can
+// never go stale again) and the one-at-a-time sequential rule must be stated.
+// The usage text describes what can be proposed; the auto-vote ceiling that
+// decides whether validators vote on their own is reported by `status`.
 func TestPrintUpgradeUsage_CurrentLadder(t *testing.T) {
-	maxV := sageabci.MaxSupportedAppVersion()
+	maxV := sageabci.MaxCompiledAppVersion()
 	out := captureStdout(t, printUpgradeUsage)
 
 	top := "app-v" + strconv.FormatUint(maxV, 10)
