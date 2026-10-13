@@ -34,11 +34,13 @@ test('connected agents are searchable without domains; exact addresses and pagin
     page.on('pageerror', error => errors.push(error.message));
     await openDirectory(page);
     await expect(page.getByText('Messaging blocked', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Agents on Research laptop' }).click();
     await page.getByRole('searchbox', { name: 'Find an agent' }).fill('autoresearch');
     await expect(page.locator('.fed-directory-agent')).toHaveCount(1);
     await page.getByRole('button', { name: /Copy address for/ }).click();
     await expect.poll(() => page.evaluate(() => window.copied)).toBe('c'.repeat(64) + '@test-chain');
     await page.getByRole('searchbox', { name: 'Find an agent' }).fill('');
+    await page.getByRole('button', { name: /^Your agents/ }).click();
     await page.getByRole('button', { name: 'Next agents' }).click();
     await expect.poll(() => page.evaluate(() => window.pages)).toEqual(['local']);
     expect(errors).toEqual([]);

@@ -332,7 +332,12 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
+      - run: npm ci
       - run: npm test
+      - name: Install Chromium for serverless fixtures
+        run: npx playwright install --with-deps chromium
+      - name: Federation browser fixtures (no running node)
+        run: npm run test:e2e:fixtures
 
   quality-gate:
     name: Quality and Chaos Fan-In

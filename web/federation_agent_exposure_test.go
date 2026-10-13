@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/l33tdawg/sage/internal/federation"
 	"github.com/l33tdawg/sage/internal/store"
 	"github.com/stretchr/testify/require"
 )
@@ -25,6 +26,11 @@ type agentExposureContractDriver struct {
 	lastMode   string
 	lastAgents []string
 	lastExpect int64
+	rosterErr  error
+}
+
+func (d *agentExposureContractDriver) ListFederatedAgentExposureAgents(context.Context, string) ([]federation.AgentExposureCandidate, error) {
+	return []federation.AgentExposureCandidate{{AgentID: strings.Repeat("c", 64), DisplayName: "Sage", Provider: "codex"}}, d.rosterErr
 }
 
 func (d *agentExposureContractDriver) GetFederatedAgentExposure(
@@ -146,6 +152,17 @@ func TestFederatedAgentExposureDashboardUnconfiguredReportsDefault(t *testing.T)
 	body := rr.Body.String()
 	require.Contains(t, body, `"mode":"all"`)
 	require.Contains(t, body, `"configured":false`)
+	require.Contains(t, body, `"display_name":"Sage"`)
+	require.NotContains(t, body, `"claim_token"`)
+}
+
+func TestFederatedAgentExposureDashboardRosterErrorsFailClosed(t *testing.T) {
+	handler, driver := newAgentExposureDashboardFixture(t)
+	driver.rosterErr = errors.New("consensus eligibility unavailable")
+	rr := agentExposureDashboardRequest(t, handler, http.MethodGet, "", true)
+	require.Equal(t, http.StatusConflict, rr.Code)
+	require.NotContains(t, rr.Body.String(), `"agents"`)
+	require.Contains(t, rr.Body.String(), "Refresh this connection")
 }
 
 func TestFederatedAgentExposureDashboardPutForwardsExactIntent(t *testing.T) {

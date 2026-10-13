@@ -188,7 +188,7 @@ jobs:
       - run: npm test
       - name: Install Chromium for serverless fixtures
         run: npx playwright install --with-deps chromium
-      - name: Federation browser fixtures (9 tests; no running node)
+      - name: Federation browser fixtures (no running node)
         run: npm run test:e2e:fixtures
 
   benchmark-protocol:

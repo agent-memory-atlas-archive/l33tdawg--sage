@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { filterFederationAgents, stageFederationDomains } from '../web/static/js/federation-directory.js';
+import { filterFederationAgents, stageFederationDomains, updateFederationVisibility, federationVisibilityEqual } from '../web/static/js/federation-directory.js';
 
 test('directory search works without memory grants and preserves exact identity', () => {
     const agents = [{ agent_id: 'first', display_name: 'codex/sage', provider: 'codex', domains: [] },
@@ -9,6 +9,19 @@ test('directory search works without memory grants and preserves exact identity'
     assert.deepEqual(filterFederationAgents(agents, 'claude'), [agents[1]]);
     assert.deepEqual(filterFederationAgents(agents, 'second'), [agents[1]]);
     assert.deepEqual(filterFederationAgents(agents, ''), agents);
+});
+
+test('visibility changes preserve exact identities outside the search and never opt future agents in', () => {
+    const agents = [{ agent_id: 'first', name: 'Sage', provider: 'codex' }, { agent_id: 'second', name: 'Research', provider: 'claude-code' }];
+    const all = { mode: 'all', agent_ids: [] };
+    const narrowed = updateFederationVisibility(all, agents, ['first'], false);
+    assert.deepEqual(narrowed, { mode: 'selected', agent_ids: ['second'] });
+    assert.deepEqual(all, { mode: 'all', agent_ids: [] });
+    assert.deepEqual(updateFederationVisibility(narrowed, agents, ['first', 'forged'], true), { mode: 'selected', agent_ids: ['first', 'second'] });
+    assert.deepEqual(filterFederationAgents(agents, 'claude research', { visibility: 'visible', policy: narrowed }), [agents[1]]);
+    assert.deepEqual(filterFederationAgents(agents, '', { provider: 'codex', visibility: 'hidden', policy: narrowed }), [agents[0]]);
+    assert.equal(federationVisibilityEqual({ mode: 'selected', agent_ids: ['second', 'first'] }, { mode: 'selected', agent_ids: ['first', 'second'] }), true);
+    assert.equal(federationVisibilityEqual(all, { mode: 'selected', agent_ids: ['first', 'second'] }), false);
 });
 
 test('bulk and drag/drop sharing only stage authorized domains and preserve prior draft choices', () => {
