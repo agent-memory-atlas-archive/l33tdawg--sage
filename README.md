@@ -97,7 +97,7 @@ docker run -d --name sage \
   ghcr.io/l33tdawg/sage:latest
 ```
 
-Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.21`.
+Pin a specific version with `ghcr.io/l33tdawg/sage:11.23.22`.
 
 The SAGE server stays in that container. To give a local MCP client a stdio
 bridge, start a second process **inside the same running container**:
@@ -314,7 +314,19 @@ uses re-enrollment; historical memory authorship is preserved.
 ---
 
 <details>
-<summary>Recent release notes (v11.23.21 and earlier)</summary>
+<summary>Recent release notes (v11.23.22 and earlier)</summary>
+
+## What's New in v11.23.22
+
+**Choose which agents a peer can find.** Federation visibility uses the complete eligible roster instead of general registry entries that could make a partial selection fail. Search by name, provider, or ID, filter Visible/Hidden, and change an individual agent or only the agents matching your filters.
+
+**Review choices in one place.** Compact rows, Save/Discard, and inline refresh controls keep visibility edits together. Filtered rows stay in place until saving, preserving keyboard focus. The peer's contacts have their own read-only view, while optional memory sharing and access settings are collapsed separately. Agents whose security policy blocks messages remain marked Not accepting.
+
+Individual and filtered choices stay an exact selection, even when all current agents are selected. **Show all agents** explicitly includes future eligible agents. Visibility grants discovery only; memory access and message delivery keep their existing authorization checks.
+
+App-v28 remains active and no chain migration is required.
+
+Container: `ghcr.io/l33tdawg/sage:11.23.22`. SDK 11.23.22.
 
 ## What's New in v11.23.21
 
