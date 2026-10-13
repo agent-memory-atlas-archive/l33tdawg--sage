@@ -15,6 +15,7 @@ import (
 
 type federatedAgentExposureDriver interface {
 	GetFederatedAgentExposure(context.Context, string) (*store.FederatedAgentExposure, error)
+	ListFederatedAgentExposureAgents(context.Context, string) ([]federation.AgentExposureCandidate, error)
 	SetFederatedAgentExposure(context.Context, string, string, []string, int64) (*store.FederatedAgentExposure, error)
 }
 
@@ -47,9 +48,15 @@ func (h *DashboardHandler) handleFedAgentExposureGet(w http.ResponseWriter, r *h
 		fedWriteErr(w, http.StatusConflict, "Agent discovery policy changed or is unavailable. Refresh the connection.")
 		return
 	}
+	agents, err := driver.ListFederatedAgentExposureAgents(r.Context(), chain)
+	if err != nil {
+		fedWriteErr(w, http.StatusConflict, "Agent visibility could not be loaded. Refresh this connection and try again.")
+		return
+	}
 	fedWriteJSON(w, http.StatusOK, map[string]any{
 		"remote_chain_id": chain,
 		"exposure":        exposure,
+		"agents":          agents,
 	})
 }
 

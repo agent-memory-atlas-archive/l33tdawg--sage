@@ -1,9 +1,33 @@
 // Federation membership and memory grants are separate product controls.
-export function filterFederationAgents(agents, query) {
-    const text = String(query || '').trim().toLowerCase();
-    return (agents || []).filter(agent => !text ||
-        [agent.display_name, agent.registered_name, agent.provider, agent.agent_id]
-            .some(value => String(value || '').toLowerCase().includes(text)));
+export function federationAgentVisible(policy, agentID) {
+    return !!policy && (policy.mode === 'all' || (policy.mode === 'selected' && (policy.agent_ids || []).includes(agentID)));
+}
+
+export function filterFederationAgents(agents, query, { provider = '', visibility = 'all', policy } = {}) {
+    const terms = String(query || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return (agents || []).filter(agent => {
+        const text = [agent.name, agent.display_name, agent.registered_name, agent.provider, agent.agent_id]
+            .map(value => String(value || '').toLowerCase()).join(' ');
+        return terms.every(term => text.includes(term)) && (!provider || (agent.provider || 'Agent') === provider) &&
+            (visibility === 'all' || federationAgentVisible(policy, agent.agent_id) === (visibility === 'visible'));
+    });
+}
+
+// Individual and filtered changes produce an exact selection. Only the explicit
+// "Show all agents" action opts future enrollments into this connection.
+export function updateFederationVisibility(policy, agents, agentIDs, visible) {
+    const eligible = new Set(agents.map(agent => agent.agent_id));
+    const selected = new Set(agents.filter(agent => federationAgentVisible(policy, agent.agent_id)).map(agent => agent.agent_id));
+    for (const id of agentIDs) {
+        if (!eligible.has(id)) continue;
+        if (visible) selected.add(id); else selected.delete(id);
+    }
+    return { mode: selected.size ? 'selected' : 'none', agent_ids: [...selected].sort() };
+}
+
+export function federationVisibilityEqual(left, right) {
+    return !!left && !!right && left.mode === right.mode &&
+        JSON.stringify([...(left.agent_ids || [])].sort()) === JSON.stringify([...(right.agent_ids || [])].sort());
 }
 
 export function stageFederationDomains(draft, catalog, domains, permission) {
@@ -16,10 +40,14 @@ export function stageFederationDomains(draft, catalog, domains, permission) {
     return next;
 }
 
-export function FederationDirectory({ peerName, localName, local, remote, automatic, copyAddress, loadMore, catalog, stageDomains, draft, disabled, visibility }) {
+export function FederationDirectory({ peerName, localName, local, remote, automatic, copyAddress, loadMore, catalog, stageDomains, draft, disabled, visibility, showSharing = true }) {
     const html = window.html;
     const { useState, useEffect } = preactHooks;
     const [query, setQuery] = useState('');
+    const [side, setSide] = useState('local');
+    const [provider, setProvider] = useState('');
+    const [visibilityFilter, setVisibilityFilter] = useState('all');
+    const [visibilityDraft, setVisibilityDraft] = useState(null);
     const [domainQuery, setDomainQuery] = useState('');
     const [selected, setSelected] = useState([]);
     const [notice, setNotice] = useState('');
@@ -27,6 +55,21 @@ export function FederationDirectory({ peerName, localName, local, remote, automa
     const [pages, setPages] = useState({});
     const [copied, setCopied] = useState('');
     const [domainLimit, setDomainLimit] = useState(24);
+    const savedVisibility = visibility && visibility.policy;
+    useEffect(() => { setVisibilityDraft(null); }, [savedVisibility]);
+    const policy = visibilityDraft || savedVisibility;
+    const roster = visibility && Array.isArray(visibility.agents) ? visibility.agents : [];
+    const visibilityReady = !!savedVisibility && visibility && Array.isArray(visibility.agents);
+    const visibilityDisabled = !visibilityReady || visibility.saving;
+    const visibilityDirty = visibilityReady && !federationVisibilityEqual(policy, savedVisibility);
+    const changeVisibility = (agentIDs, visible) => {
+        if (visibilityDisabled) return;
+        setVisibilityDraft(current => updateFederationVisibility(current || savedVisibility, roster, agentIDs, visible));
+    };
+    const changeAll = visible => {
+        if (!visibilityDisabled) setVisibilityDraft({ mode: visible ? 'all' : 'none', agent_ids: [] });
+    };
+    const chooseSide = next => { if (next === side) return; setSide(next); setQuery(''); setProvider(''); setVisibilityFilter('all'); };
     const domains = Object.keys(catalog || {}).filter(domain => catalog[domain].can_share !== false && domain.toLowerCase().includes(domainQuery.toLowerCase()));
     const stage = (items, permission) => {
         if (disabled || !items.length) return;
@@ -71,57 +114,92 @@ export function FederationDirectory({ peerName, localName, local, remote, automa
             setNotice(`Message address copied for ${agent.display_name || agent.registered_name || 'agent'} on ${nodeName}.`);
         } catch { setNotice('Could not copy the agent address. Try again.'); }
     };
+    const operatorRoster = side === 'local' && !!visibility;
+    const activePage = pages[side];
+    const grant = activePage ? activePage.grant : (side === 'local' ? local : remote);
+    const contacts = grant && Array.isArray(grant.contacts) ? grant.contacts : [];
+    const allAgents = (operatorRoster ? roster : contacts).slice().sort((a, b) =>
+        String(a.display_name || a.name || a.registered_name || a.agent_id).localeCompare(String(b.display_name || b.name || b.registered_name || b.agent_id)));
+    // Keep rows and keyboard focus stable while editing a filtered selection.
+    // Visibility filters reflect the saved policy until Save confirms the draft.
+    const agents = filterFederationAgents(allAgents, query, { provider, visibility: operatorRoster ? visibilityFilter : 'all', policy: savedVisibility });
+    const providers = [...new Set(allAgents.map(agent => agent.provider || 'Agent'))].sort();
+    const visibleCount = roster.filter(agent => federationAgentVisible(policy, agent.agent_id)).length;
+    const savedVisibleCount = roster.filter(agent => federationAgentVisible(savedVisibility, agent.agent_id)).length;
+    const changedCount = roster.filter(agent => federationAgentVisible(policy, agent.agent_id) !== federationAgentVisible(savedVisibility, agent.agent_id)).length;
+    const filtersActive = !!query.trim() || !!provider || visibilityFilter !== 'all';
+    const clearFilters = () => { setQuery(''); setProvider(''); setVisibilityFilter('all'); };
+    const matchingVisible = agents.filter(agent => federationAgentVisible(policy, agent.agent_id)).length;
     return html`<section class="fed-directory" aria-label="Federation agent directory">
         <div class="fed-directory-heading"><div><h3>Agents across this connection</h3>
-            <p>${automatic ? 'Discovery and messaging are on by default. Sharing memory is a separate choice.' : (automatic === false ? 'This peer needs an update for automatic discovery and messaging. Its existing shared contacts are shown below.' : 'Checking the connection’s messaging capabilities…')}</p></div>
-            <label>Find an agent<input type="search" placeholder="Name, provider, or agent ID" value=${query} onInput=${e => setQuery(e.target.value)} /></label>
+            <p>${automatic ? `Choose which agents ${peerName} can find. Memory sharing has its own controls.` : (automatic === false ? 'Update this peer for automatic discovery and messaging. Existing shared contacts are listed here.' : 'Checking the connection’s messaging capabilities…')}</p></div>
         </div>
-        <div class="fed-directory-nodes">
-            ${[{ side: 'local', name: localName || 'Viewing this node', grant: local }, { side: 'remote', name: peerName, grant: remote }].map(node => {
-                const activePage = pages[node.side];
-                if (activePage) node.grant = activePage.grant;
-                const contacts = node.grant && Array.isArray(node.grant.contacts) ? node.grant.contacts : [];
-                const operatorRoster = node.side === 'local' && visibility && Array.isArray(visibility.agents);
-                const agents = filterFederationAgents(operatorRoster ? visibility.agents : contacts, query);
-                return html`<article class="fed-directory-node" key=${node.side}>
-                    <header><span class="fed-directory-node-dot" aria-hidden="true"></span><h4>${node.name}${node.side === 'local' && html`<small class="fed-node-viewing">Viewing this node</small>`}</h4><span>${agents.length} shown</span></header>
-                    <div class="fed-directory-agents">${agents.map(agent => {
-                        if (operatorRoster) {
-                            const contact = contacts.find(candidate => candidate.agent_id === agent.agent_id);
-                            const visible = visibility.mode === 'all' ||
-                                (visibility.mode === 'selected' && visibility.selected.has(agent.agent_id));
-                            return html`<div class="fed-directory-agent" key=${agent.agent_id}>
-                                <strong>${agent.display_name || agent.registered_name || agent.agent_id.slice(0, 12)}</strong>
-                                <small>${agent.provider || 'Agent'} · ${agent.agent_id.slice(0, 8)}</small>
-                                <span>${visible
-                                    ? (contact ? (contact.accepting && contact.available ? 'Messaging allowed' : 'Messaging blocked') : `Visible to ${node.name}`)
-                                    : `Not visible to ${node.name}`}</span>
-                                <label class="fed-agent-toggle fed-agent-visible">
-                                    <input type="checkbox" role="switch" checked=${visible}
-                                        disabled=${visibility.busy || disabled}
-                                        aria-label=${`${visible ? 'Visible' : 'Not visible'} to ${node.name}`}
-                                        onChange=${event => visibility.setVisible(agent.agent_id, event.target.checked)} />
-                                    <span class=${visible ? 'on' : ''}>${visible ? 'Visible' : 'Not visible'}</span>
-                                </label>
-                            </div>`;
-                        }
-                        return html`<div class="fed-directory-agent" key=${agent.agent_id}>
-                            <strong>${agent.display_name || agent.registered_name || agent.agent_id.slice(0, 12)}</strong>
-                            <small>${agent.provider || 'Agent'} · ${agent.agent_id.slice(0, 8)}</small>
-                            <span>${node.grant && node.grant.paused ? 'Connection paused' : (agent.accepting && agent.available ? 'Messaging allowed' : 'Messaging blocked')}</span>
-                            <button type="button" class="fed-address-copy" disabled=${!agent.address} aria-label=${`Copy address for ${agent.display_name || agent.registered_name || agent.agent_id} on ${node.name}`} onClick=${() => copy(agent, node.name)}>${copied === agent.address ? 'Copied' : 'Copy address'}</button>
-                        </div>`;
-                    })}</div>
-                    ${!node.grant && !operatorRoster && html`<p class="muted">Directory not available yet.</p>`}
-                    ${node.grant && !agents.length && html`<p class="muted">${query ? 'No matching agents on this page.' : 'No eligible agents on this page.'}</p>`}
-                    ${!operatorRoster && activePage && html`<button type="button" class="btn" disabled=${!!loading} onClick=${() => setPages(current => { const next = { ...current }; delete next[node.side]; return next; })}>First agents</button>`}
-                    ${!operatorRoster && activePage && activePage.error && html`<p role="status">This page could not be refreshed. Return to the first page or retry.</p><button type="button" class="btn" disabled=${!!loading} onClick=${() => more(node.side, activePage.cursor)}>Retry page</button>`}
-                    ${!operatorRoster && node.grant && node.grant.next_cursor && html`<button type="button" class="btn" disabled=${!!loading} onClick=${() => more(node.side, node.grant.next_cursor)}>${loading === node.side ? 'Loading…' : 'Next agents'}</button>`}
-                </article>`;
-            })}
+        <div class="fed-directory-tabs" role="group" aria-label="Agent directories">
+            <button type="button" aria-pressed=${side === 'local'} onClick=${() => chooseSide('local')}>Your agents${visibilityReady && html`<span>${roster.length}</span>`}${visibilityDirty && html`<small>Unsaved</small>`}</button>
+            <button type="button" aria-pressed=${side === 'remote'} onClick=${() => chooseSide('remote')}>Agents on ${peerName}</button>
         </div>
-        <p class="muted">Being listed does not mean an agent is currently running, and visibility never grants memory access. Flip Visible on your own agents to control who ${peerName} can find; copy an address when you want to send work from your agent’s messaging tool.</p>
-        <details class="fed-directory-sharing">
+        <article class="fed-directory-node">
+            <header class="fed-directory-node-heading">
+                <div><h4>${side === 'local' ? localName || 'This SAGE' : peerName}</h4>
+                    <p>${operatorRoster ? `Visible agents appear in ${peerName}’s searches and directory.` : 'Copy an address to send work from your agent’s messaging tool.'}</p></div>
+                ${operatorRoster && html`<span class="fed-visibility-count">${visibilityReady ? `${visibleCount} ${visibilityDirty ? 'will be visible' : 'visible'} · ${roster.length - visibleCount} hidden` : 'Loading visibility…'}</span>`}
+            </header>
+            ${operatorRoster && html`<div class="fed-visibility-policy">
+                <span>${visibilityReady ? (policy.mode === 'all' ? 'All agents visible, including future agents' : policy.mode === 'none' ? 'All agents hidden' : 'Only selected agents visible') : 'Loading eligible agents…'}</span>
+                <div><button type="button" class="btn" disabled=${visibilityDisabled || policy?.mode === 'all'} onClick=${() => changeAll(true)}>Show all agents</button>
+                    <button type="button" class="btn" disabled=${visibilityDisabled || policy?.mode === 'none'} onClick=${() => changeAll(false)}>Hide all agents</button></div>
+            </div>`}
+            <div class="fed-directory-toolbar">
+                <label class="fed-agent-search">Find an agent<input type="search" placeholder="Name, provider, or agent ID" value=${query} onInput=${e => setQuery(e.target.value)} /></label>
+                <label class="fed-agent-provider">Provider<select aria-label="Filter by provider" value=${provider} onChange=${e => setProvider(e.target.value)}>
+                    <option value="">All providers</option>${providers.map(value => html`<option key=${value} value=${value}>${value}</option>`)}</select></label>
+            </div>
+            ${operatorRoster && html`<div class="fed-visibility-filters" role="group" aria-label="Filter by visibility">
+                ${[['all', 'All agents', roster.length], ['visible', 'Visible', savedVisibleCount], ['hidden', 'Hidden', roster.length - savedVisibleCount]].map(([value, label, count]) => html`<button type="button" key=${value} aria-pressed=${visibilityFilter === value} disabled=${!visibilityReady} onClick=${() => setVisibilityFilter(value)}>${label}<span>${visibilityReady ? count : '…'}</span></button>`)}
+            </div>`}
+            ${operatorRoster && visibilityDirty && visibilityFilter !== 'all' && html`<p class="fed-directory-filter-note">Visibility filters update after you save.</p>`}
+            <div class="fed-directory-results"><span>${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}${filtersActive ? ` matching of ${allAgents.length}` : (operatorRoster ? ' on this SAGE' : ' on this page')}</span>
+                ${filtersActive && html`<button type="button" class="fed-directory-clear" onClick=${clearFilters}>Clear filters</button>`}
+                ${operatorRoster && filtersActive && html`<div class="fed-directory-bulk">
+                    <button type="button" class="btn" disabled=${visibilityDisabled || !agents.length || matchingVisible === agents.length} onClick=${() => changeVisibility(agents.map(agent => agent.agent_id), true)}>Show matching</button>
+                    <button type="button" class="btn" disabled=${visibilityDisabled || !matchingVisible} onClick=${() => changeVisibility(agents.map(agent => agent.agent_id), false)}>Hide matching</button>
+                </div>`}
+            </div>
+            <div class="fed-directory-agents" aria-label=${operatorRoster ? 'Agent visibility choices' : 'Available agent contacts'}>${agents.map(agent => {
+                const label = agent.display_name || agent.name || agent.registered_name || agent.agent_id.slice(0, 12);
+                const visible = federationAgentVisible(policy, agent.agent_id);
+                const changed = operatorRoster && visible !== federationAgentVisible(savedVisibility, agent.agent_id);
+                return html`<div class=${`fed-directory-agent${operatorRoster && visible ? ' is-visible' : ''}${changed ? ' is-changed' : ''}`} key=${agent.agent_id}>
+                    <span class="fed-agent-avatar" aria-hidden="true">${label.replace(/^(codex|claude-code|agent)\//, '').slice(0, 1).toUpperCase()}</span>
+                    <div class="fed-agent-identity"><strong>${label}${operatorRoster && agent.messaging_blocked && html`<span class="fed-agent-not-accepting" title="Messaging is blocked by this agent’s security policy.">Not accepting</span>`}</strong>
+                        <small>${agent.provider || 'Agent'}<span aria-hidden="true"> · </span><code title=${agent.agent_id}>${agent.agent_id.slice(0, 8)}</code>${agent.registered_name && agent.registered_name !== label && html`<span class="fed-agent-registered"> · ${agent.registered_name}</span>`}</small></div>
+                    ${operatorRoster ? html`<label class="fed-agent-toggle fed-agent-visible">
+                        <span>${visible ? 'Visible' : 'Hidden'}${changed && html`<small>Unsaved</small>`}</span>
+                        <input type="checkbox" role="switch" checked=${visible} disabled=${visibilityDisabled}
+                            aria-label=${`Make ${label} visible to ${peerName}`}
+                            onChange=${event => changeVisibility([agent.agent_id], event.target.checked)} />
+                        <span class="fed-visibility-switch" aria-hidden="true"></span>
+                    </label>` : html`<span class="fed-agent-messaging">${grant && grant.paused ? 'Connection paused' : agent.accepting && agent.available ? 'Messaging allowed' : 'Messaging blocked'}</span>
+                        <button type="button" class="btn fed-address-copy" disabled=${!agent.address} aria-label=${`Copy address for ${label} on ${side === 'local' ? localName || 'this SAGE' : peerName}`} onClick=${() => copy(agent, side === 'local' ? localName || 'this SAGE' : peerName)}>${copied === agent.address ? 'Copied' : 'Copy address'}</button>`}
+                </div>`;
+            })}</div>
+            ${!agents.length && html`<div class="fed-directory-empty"><strong>${operatorRoster && !visibilityReady ? 'Agent visibility is unavailable' : filtersActive ? 'No agents match these filters' : 'No agents listed'}</strong>
+                <p>${operatorRoster && !visibilityReady ? 'Refresh to load the current agents and visibility policy.' : filtersActive ? 'Try another name or clear the filters.' : operatorRoster ? 'Active, enrolled agents will appear here.' : 'This page has no available contacts. Check the next page if one is offered.'}</p></div>`}
+            ${operatorRoster && html`<div class="fed-visibility-save" aria-live="polite">
+                <div><strong>${visibility.saving ? 'Saving visibility…' : !visibilityReady ? 'Visibility unavailable' : visibilityDirty ? (changedCount ? `${changedCount} ${changedCount === 1 ? 'agent changed' : 'agents changed'}` : 'Visibility mode changed') : 'Visibility saved'}</strong>
+                    <span>${visibilityDirty ? 'Review your choices, then save for this connection.' : 'Visibility grants discovery only. Memory access is separate.'}</span></div>
+                <div class="fed-visibility-save-actions"><button type="button" class="btn" disabled=${!visibilityDirty || visibility.saving} onClick=${() => setVisibilityDraft(null)}>Discard</button>
+                    <button type="button" class="btn btn-primary" disabled=${!visibilityDirty || visibility.saving} onClick=${() => visibility.save(policy.mode, policy.agent_ids)}>Save visibility</button></div>
+            </div>
+                ${visibility.error && html`<div class="fed-visibility-error" role="alert">${visibility.error}<button type="button" class="btn" disabled=${visibility.saving} onClick=${visibility.refresh}>Refresh visibility</button></div>`}`}
+            ${!operatorRoster && html`<div class="fed-directory-pagination">
+                ${activePage && html`<button type="button" class="btn" disabled=${!!loading} onClick=${() => setPages(current => { const next = { ...current }; delete next[side]; return next; })}>First agents</button>`}
+                ${activePage && activePage.error && html`<span role="status">This page could not be refreshed.</span><button type="button" class="btn" disabled=${!!loading} onClick=${() => more(side, activePage.cursor)}>Retry page</button>`}
+                ${grant && grant.next_cursor && html`<button type="button" class="btn" disabled=${!!loading} onClick=${() => more(side, grant.next_cursor)}>${loading === side ? 'Loading…' : 'Next agents'}</button>`}
+            </div>
+                <p class="fed-directory-page-note">Search covers this page. Being listed does not mean an agent is running.</p>`}
+        </article>
+        ${showSharing && html`<details class="fed-directory-sharing">
             <summary>Share memory with ${peerName} — optional</summary>
             <p>Select domains together, then choose Read, Copy, or Clear domain permissions. You can also drag a domain or your selection onto an area. Changes stay in the permission draft until you save.</p>
             <label>Find a domain<input type="search" value=${domainQuery} onInput=${e => { setDomainQuery(e.target.value); setDomainLimit(24); }} /></label>
@@ -137,7 +215,7 @@ export function FederationDirectory({ peerName, localName, local, remote, automa
                 onClick=${() => stage(selected, permission)}>
                 <strong>${permission === 'remove' ? 'Clear domain permissions' : permission === 'read' ? 'Live Read' : 'Offer Copy'}</strong><span>${permission === 'remove' ? 'Clear these Read/Copy choices after saving. Other domain or agent sharing may still allow access. Existing copies remain.' : permission === 'read' ? 'They may query these memories here.' : 'They may keep local copies after subscribing.'}</span>
                 <small>${selected.length ? `Add ${selected.length} selected domains to draft` : 'Drop domains here'}</small></button>`)}</div>
-        </details>
+        </details>`}
         ${notice && html`<p role="status" aria-live="polite">${notice}</p>`}
     </section>`;
 }

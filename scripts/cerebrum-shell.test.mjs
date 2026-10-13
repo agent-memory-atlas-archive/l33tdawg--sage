@@ -1189,7 +1189,7 @@ test('direct federation controls are symmetric after pairing', () => {
     assert.match(panel, /const showOutgoing = roleKnown/);
     assert.match(panel, /\$\{roleKnown && html`<section class="fed-perm-section fed-agent-section">/,
         'agent contact controls must not disappear merely because this SAGE scanned the first code');
-	assert.match(panel, /Agents can discover and message across upgraded nodes automatically/,
+	assert.match(panel, /visibility=\$\{automaticNodeMessaging === false \? null/,
 		'the ceremony role must not control ongoing pairwise membership');
 	assert.match(panel, /This trusted connection is its own federation group/,
 		'the pairwise relationship itself must be the group; no mirrored local group is required');
@@ -1209,10 +1209,11 @@ test('federation agent membership stays administrative and message RBAC remains 
     assert.match(apiSource, /connections\/\$\{encodeURIComponent\(chainId\)\}\/pipe-contacts/);
     assert.match(apiSource, /agent_id: agentId, contact_id: contactId, accepting: !!accepting/,
         'a toggle must carry the exact agent and contact revision instead of a display handle');
-    assert.match(panel, /<h4>Agent-owned memory sharing<\/h4>/);
+    assert.match(panel, /<h4>Share an agent’s memory<\/h4>/);
     assert.match(panel, /<\$\{FederationDirectory}/,
         'CEREBRUM must remain the administrative surface, not become a second inbox');
-    assert.match(panel, /Agent discovery and messaging are handled separately above/);
+    assert.match(panel, /class="fed-memory-settings"/,
+        'optional memory controls must remain separate from agent visibility');
     assert.match(panel, /messages blocked by Agent RBAC/,
         'message delivery must remain visibly governed separately from exported Read membership');
     assert.match(panel, /contact\.contact_id/,
@@ -1446,10 +1447,10 @@ test('federation keeps temporary pause separate from permanent revocation and ma
         'connection controls must identify the SAGE they affect');
     assert.match(page, /pairing preserved/);
     assert.match(panel, /Revoke trust permanently/);
-    assert.equal((panel.match(/onClick=\$\{onRevoke\}/g) || []).length, 2,
-        'permanent revocation must be available at both the top and bottom of long connection details');
-    assert.ok(panel.indexOf('fed-perm-top-actions') < panel.indexOf('fed-agent-section'),
-        'the upper revocation action must precede the long agent and domain controls');
+    assert.equal((panel.match(/onClick=\$\{onRevoke\}/g) || []).length, 1,
+        'compact connection details must have one clear permanent revocation action');
+    assert.ok(panel.indexOf('fed-perm-danger') > panel.indexOf('</details>'),
+        'revocation must remain reachable without expanding optional memory controls');
     assert.equal((panel.match(/onClick=\$\{save\}>\$\{outgoingSaveLabel\}/g) || []).length, 2,
         'outgoing permission changes must be saveable above and below the long domain table');
     assert.equal((panel.match(/onClick=\$\{saveSubscriptions\}>\$\{copySaveLabel\}/g) || []).length, 2,
@@ -1586,7 +1587,7 @@ test('Sharing & Sync groups expose health and guarded operator controls', () => 
         'a final partial-setup error must survive the local projection reload');
 	assert.match(appSource, /For one other SAGE, use the direct relationship above instead/,
         'the direct relationship and group models must be visibly separate');
-	assert.match(appSource, /Agents can discover and message across upgraded nodes automatically/,
+	assert.match(appSource, /visibility=\$\{automaticNodeMessaging === false \? null/,
         'the ceremony role must not hide ordinary directional controls after trust is established');
 	assert.match(appSource, /Each SAGE independently chooses which memory domains it shares/,
         'symmetric control means independent explicit grants, never an implied bilateral grant');
@@ -1885,23 +1886,28 @@ test('the app-version panel renders without governance scopes', () => {
         'the scope cards must stay inside the scopes gate');
 });
 
-test('agent visibility is a live per-agent switch, not a buried save form', async () => {
+test('agent visibility keeps exact choices and saving beside the searchable directory', async () => {
     const directorySource = await readFile(new URL('../web/static/js/federation-directory.js', import.meta.url), 'utf8');
     assert.doesNotMatch(appSource, /Save discovery policy/,
         'discovery must not require hunting for a Save button');
     assert.doesNotMatch(appSource, /Unsaved discovery changes/);
-    assert.match(appSource, /const setAgentVisibility = \(agentID, visible\) =>/,
-        'visibility must be set one exact agent at a time');
+    assert.match(directorySource, /changeVisibility\(\[agent\.agent_id\], event\.target\.checked\)/,
+        'an individual switch must edit one exact identity');
     assert.match(appSource, /expected_revision: Number\(agentExposure\.revision \|\| 0\)/,
-        'each switch must carry the revision it read');
-    assert.match(appSource, /const setAllAgentsVisible = visible =>/,
+        'saving must carry the revision it read');
+    assert.match(directorySource, /const changeAll = visible =>/,
         'bulk all/none must remain available for recovery');
-    assert.match(appSource, /automaticNodeMessaging !== false && html`<section class="fed-perm-section fed-agent-section"/,
+    assert.match(appSource, /visibility=\$\{automaticNodeMessaging === false \? null/,
         'discovery switches only render for peers that support automatic discovery');
     assert.match(directorySource, /role="switch"/,
-        'each local agent card must expose a visible switch');
-    assert.match(directorySource, /Not visible to \$\{node\.name\}/,
-        'the card must say what the switch means for this peer');
+        'each local agent row must expose a visible switch');
+    assert.match(directorySource, /Make \$\{label\} visible to \$\{peerName\}/,
+        'the switch must identify the receiving peer');
+    assert.match(directorySource, /class="fed-visibility-save"/,
+        'Save and Discard belong beside the choices, outside collapsed memory settings');
+    assert.match(directorySource, /aria-label="Filter by visibility"/);
+    assert.match(appSource, /setExposureAgents\(Array\.isArray\(result\.agents\)/,
+        'visibility must use the eligible roster rather than the general registry');
 });
 
 test('federation page leads with connections and folds exploration away', () => {

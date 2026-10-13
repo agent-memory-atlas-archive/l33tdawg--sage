@@ -4,10 +4,66 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/l33tdawg/sage/internal/store"
 )
+
+// AgentExposureCandidate contains only operator-facing directory metadata.
+// Eligibility comes from the same consensus checks used when saving a selection;
+// a locally active registry row alone is not enough to offer an agent here.
+type AgentExposureCandidate struct {
+	AgentID          string `json:"agent_id"`
+	DisplayName      string `json:"display_name"`
+	RegisteredName   string `json:"registered_name,omitempty"`
+	Provider         string `json:"provider,omitempty"`
+	MessagingBlocked bool   `json:"messaging_blocked,omitempty"`
+}
+
+func (m *Manager) ListFederatedAgentExposureAgents(ctx context.Context, remoteChainID string) ([]AgentExposureCandidate, error) {
+	ss := m.syncStore()
+	if ss == nil || m.badger == nil {
+		return nil, errors.New("agent discovery roster requires local consensus and SQLite state")
+	}
+	policyUnlock := ss.LockSyncPolicyRead()
+	defer policyUnlock()
+	ownerUnlock := m.badger.LockDomainOwnershipRead()
+	defer ownerUnlock()
+	contactUnlock := ss.LockAgentContactRead()
+	defer contactUnlock()
+	policy, err := m.GetPeerRBACPolicy(ctx, remoteChainID)
+	if err != nil || policy == nil {
+		return nil, errors.New("agent discovery roster requires an active peer policy binding")
+	}
+	agents, err := ss.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]AgentExposureCandidate, 0, len(agents))
+	for _, agent := range agents {
+		if agent == nil || agent.Status != "active" || agent.RemovedAt != nil || !isCanonicalAgentID(agent.AgentID) {
+			continue
+		}
+		eligible, eligibilityErr := m.localFederatedGuestAgentEligible(agent.AgentID)
+		if eligibilityErr != nil {
+			return nil, fmt.Errorf("resolve agent discovery eligibility: %w", eligibilityErr)
+		}
+		if eligible {
+			onChain, policyErr := m.badger.GetRegisteredAgent(agent.AgentID)
+			if policyErr != nil || onChain == nil {
+				return nil, errors.New("agent messaging policy is unavailable")
+			}
+			result = append(result, AgentExposureCandidate{
+				AgentID: agent.AgentID, DisplayName: pipeContactAgentDisplayName(agent),
+				RegisteredName: agent.RegisteredName, Provider: agent.Provider,
+				MessagingBlocked: onChain.Capabilities.Has(store.AgentCapabilityDenyFederatedPipe),
+			})
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].AgentID < result[j].AgentID })
+	return result, nil
+}
 
 // agentExposureBindingFromPolicy freezes the exact live trust generation, the
 // same four fields every other connection-scoped snapshot binds to.

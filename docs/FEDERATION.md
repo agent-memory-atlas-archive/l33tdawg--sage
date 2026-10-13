@@ -187,15 +187,24 @@ other side can address them without a domain share. That is convenient with one
 or two agents and confusing with a dozen: the other operator sees names they do
 not recognise, picks one, and sends work to the wrong agent.
 
-Open the connection. Under **Viewing this node**, every eligible agent on this
-SAGE carries a **Visible** switch that applies to this connection alone:
+Open the connection and choose **Your agents**. The list contains the complete
+eligible roster, including agents currently hidden from this peer. Use the name
+or ID search, the **Provider** selector, and the **Visible** or **Hidden** filters
+to find the agents you want to change.
 
-- Flipping an agent to **Not visible** removes it from this peer's listing and
-  search; flipping it back restores it.
-- **Show all agents** and **Hide all agents** move the whole roster at once.
-  A connection nobody has configured is all agents visible.
-- Each switch saves immediately under the connection's revision-bound
-  agreement, so there is no Save button.
+- Toggle an individual agent, or use **Show matching** / **Hide matching** to
+  change only the agents matching your filters. Agents outside those results
+  keep their current choices.
+- Select **Save visibility** to apply the choices to this connection. **Discard**
+  restores the saved policy. Visibility filters update after saving, so an
+  edited row stays in place while you review the selection.
+- **Show all agents** includes future eligible agents. Individual and filtered
+  choices remain an exact selection, even when every current agent is selected.
+  **Hide all agents** hides the entire roster. An unconfigured connection starts
+  with all eligible agents visible.
+- **Agents on <peer name>** shows the peer's contacts. Copy an address there to
+  send work from your agent's messaging tool. Memory controls are grouped under
+  **Memory sharing and access**.
 
 The change applies to their next listing, search, or `sage_find_agent` lookup;
 nothing already delivered is affected. Every connection keeps its own roster,
@@ -206,7 +215,7 @@ agent-export and manual domain lanes above) and it authorises no delivery (a
 discovered agent still has to accept, and its own Access Controls policy still
 applies). One deliberate asymmetry: an agent whose own policy refuses federated
 delivery stays listed, marked **Not accepting**, so the other side can see that
-it exists without being promised a route. Use **None** or an explicit list if
+it exists without being promised a route. Use **Hide all agents** or an individual visibility choice if
 you want it hidden entirely.
 
 New MCP clients use `sage_find_agent` followed by `sage_message_send`, then

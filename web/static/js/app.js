@@ -16917,10 +16917,10 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 	const [selectedLocalAgentID, setSelectedLocalAgentID] = useState('');
 	const [agentExports, setAgentExports] = useState({});
 	const [agentExposure, setAgentExposure] = useState(null);
-	const [exposureMode, setExposureMode] = useState('all');
-	const [exposureSelection, setExposureSelection] = useState(() => new Set());
+	const [exposureAgents, setExposureAgents] = useState(null);
 	const [exposureBusy, setExposureBusy] = useState(false);
 	const [exposureErr, setExposureErr] = useState('');
+	const exposureMutationRef = useRef(false);
 	const [readerRestrictions, setReaderRestrictions] = useState({});
 	const [selectedReaderID, setSelectedReaderID] = useState('');
 	const [readerDenyAll, setReaderDenyAll] = useState(false);
@@ -16959,7 +16959,7 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
                 fedPermissionsGet(chain, false),
                 fedSyncGet(chain),
                 fedSyncStatus(chain),
-				fedPipeContactsGet(chain, true),
+				fedPipeContactsGet(chain, false),
 				fetchAgents(),
 				fedAgentExportsGet(chain),
 				fedReaderRestrictionsGet(chain),
@@ -17036,11 +17036,15 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 				setReaderRestrictions(next);
 			} else errors.push('reader restrictions: unavailable');
 			if (exposureResult.status === 'fulfilled') {
-				const next = normalizeFedAgentExposure(exposureResult.value && exposureResult.value.exposure);
+				const result = exposureResult.value || {};
+				const next = normalizeFedAgentExposure(result.exposure);
 				setAgentExposure(next);
-				setExposureMode(next.mode);
-				setExposureSelection(next.mode === 'selected' ? new Set(next.agent_ids) : new Set());
-			} else errors.push('agent discovery policy: unavailable');
+				setExposureAgents(Array.isArray(result.agents) ? result.agents : null);
+				setExposureErr(Array.isArray(result.agents) ? '' : 'Update this SAGE to load eligible agents for visibility controls.');
+			} else {
+				setAgentExposure(null); setExposureAgents(null);
+				setExposureErr('Agent visibility could not be loaded. Refresh this connection and try again.');
+			}
             setErr(errors.length ? `Couldn't load ${errors.join('; ')}` : '');
         };
         load();
@@ -17370,11 +17374,11 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 	// Agent discovery is a live switch, not a draft: every change commits
 	// under the revision-bound connection policy the moment it is made, so
 	// there is no Save button to hunt for and no "Saved" state to decode.
-	// The complete eligible roster comes from the local agent directory —
-	// never from the bounded, exposure-filtered directory page — so narrowing
-	// "all" cannot silently drop agents that page did not show.
+	// The complete roster comes from the exposure endpoint's consensus eligibility
+	// checks. General registry rows and exposure-filtered pages are not sufficient.
 	const applyAgentExposure = async (mode, agentIDs) => {
-		if (exposureBusy || agentExposure === null) return;
+		if (exposureMutationRef.current || agentExposure === null) return;
+		exposureMutationRef.current = true;
 		const canonicalMode = mode === 'selected' && agentIDs.length === 0 ? 'none' : mode;
 		const ids = canonicalMode === 'selected' ? Array.from(new Set(agentIDs)).slice().sort() : [];
 		setExposureBusy(true); setExposureErr('');
@@ -17386,39 +17390,28 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 			});
 			const next = normalizeFedAgentExposure(response && response.exposure);
 			setAgentExposure(next);
-			setExposureMode(next.mode);
-			setExposureSelection(next.mode === 'selected' ? new Set(next.agent_ids) : new Set());
+			showToast(`Agent visibility saved for ${peerName}`, 'success');
+			return true;
 		} catch (e) {
 			setExposureErr(String(e.message || e));
+			return false;
 		} finally {
+			exposureMutationRef.current = false;
 			setExposureBusy(false);
 		}
 	};
-
-	const exposureVisibleIDs = () => {
-		if (exposureMode === 'all') return new Set(exposureCandidates.map(agent => agent.agent_id));
-		if (exposureMode === 'selected') return new Set(exposureSelection);
-		return new Set();
-	};
-
-	const setAgentVisibility = (agentID, visible) => {
-		const id = String(agentID || '').trim().toLowerCase();
-		if (!id || exposureBusy || agentExposure === null) return;
-		if (!visible && exposureMode === 'all' && exposureCandidates.length === 0) {
-			setExposureErr('The local agent list is still loading. Refresh this connection and try again.');
-			return;
-		}
-		const next = exposureVisibleIDs();
-		if (visible) next.add(id); else next.delete(id);
-		const mode = next.size === 0
-			? 'none'
-			: (next.size === exposureCandidates.length ? 'all' : 'selected');
-		applyAgentExposure(mode, Array.from(next));
-	};
-
-	const setAllAgentsVisible = visible => {
-		if (exposureBusy || agentExposure === null) return;
-		applyAgentExposure(visible ? 'all' : 'none', []);
+	const refreshAgentExposure = async () => {
+		if (exposureMutationRef.current) return;
+		exposureMutationRef.current = true;
+		setExposureBusy(true);
+		try {
+			const response = await fedAgentExposureGet(chain);
+			if (!Array.isArray(response.agents)) throw new Error('Update this SAGE to load eligible agents for visibility controls.');
+			setAgentExposure(normalizeFedAgentExposure(response.exposure));
+			setExposureAgents(response.agents);
+			setExposureErr('');
+		} catch (e) { setExposureErr(String(e.message || e)); }
+		finally { exposureMutationRef.current = false; setExposureBusy(false); }
 	};
 
 	const removeLocalAgentExport = async contact => {
@@ -17686,10 +17679,6 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 	const localAgentOptions = (Array.isArray(localAgentDirectory) ? localAgentDirectory : [])
 		.filter(agent => agent && agent.agent_id && agent.status === 'active' && !agent.removed_at && !shownLocalAgentIDs.has(agent.agent_id))
 		.sort((a, b) => fedFriendlyLocalAgentLabel(a).localeCompare(fedFriendlyLocalAgentLabel(b)));
-	const exposureCandidates = (Array.isArray(localAgentDirectory) ? localAgentDirectory : [])
-		.filter(agent => agent && agent.agent_id && agent.status === 'active' && !agent.removed_at)
-		.map(agent => ({ ...agent, agent_id: String(agent.agent_id).toLowerCase() }))
-		.sort((a, b) => fedFriendlyLocalAgentLabel(a).localeCompare(fedFriendlyLocalAgentLabel(b)));
 	const showOutgoing = roleKnown;
     const outboxCounts = syncStatus && syncStatus.outbox_counts && typeof syncStatus.outbox_counts === 'object'
         ? syncStatus.outbox_counts
@@ -17729,22 +17718,18 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 
     return html`<div class="fed-permissions-panel">
         <div class="fed-permissions-intro">
-			<strong>${relationshipRole}.</strong> This trusted connection is its own federation group; neither side creates a matching local group. ${roleKnown ? `Agents can discover and message across upgraded nodes automatically. Each SAGE independently chooses which memory domains it shares and which copies it keeps.` : 'This older pairing has no trustworthy role binding, so outbound sharing stays locked until it is paired again.'}
+			${roleKnown ? html`<strong>Connected to ${peerName}.</strong> Choose agent visibility here, then open memory settings when you want to share more.` : 'Pair this connection again to restore its role and enable sharing controls.'}
         </div>
         ${conn.sharing_paused && html`<div class="fed-perm-pause-note">
             <strong>Sharing from this SAGE is paused.</strong> The saved domain choices below are preserved and take effect again when you resume.
         </div>`}
 
-		<div class="fed-perm-top-actions" aria-label="Connection actions">
-            <span><strong>Connection actions</strong><span class="muted">Permanent revocation requires the JOIN ceremony to reconnect.</span></span>
-            <button class="btn btn-danger" disabled=${revokeBusy} onClick=${onRevoke}>${revokeBusy ? 'Revoking…' : 'Revoke trust…'}</button>
-		</div>
-
 		${roleKnown && html`<${FederationDirectory} key=${chain}
             peerName=${peerName} localName=${localName} local=${localNodeContacts} remote=${remotePipeContacts}
             automatic=${automaticNodeMessaging}
+            showSharing=${false}
             copyAddress=${copyPipeContact} catalog=${catalog || {}} draft=${draft} disabled=${busy || !draft}
-            visibility=${{ agents: exposureCandidates, mode: exposureMode, selected: exposureSelection, busy: exposureBusy || agentExposure === null, setVisible: setAgentVisibility }}
+			visibility=${automaticNodeMessaging === false ? null : { agents: exposureAgents, policy: agentExposure, saving: exposureBusy, error: exposureErr, save: applyAgentExposure, refresh: refreshAgentExposure }}
             stageDomains=${(domains, permission) => setDraft(current => stageFederationDomains(current, catalog || {}, domains, permission))}
             loadMore=${async (side, cursor) => {
                 const page = await fedPipeContactsGet(chain, side === 'remote', '', { [side]: cursor });
@@ -17752,11 +17737,14 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
                 return normalizeFedPipeContactGrant(side === 'local' ? page.local_node_contacts : page.remote_contacts);
             }} />`}
 
+		<details class="fed-memory-settings">
+			<summary><span>Memory sharing and access<small>Read permissions, agent exports, and copies</small></span><span class="fed-memory-optional">Optional${dirty || subscribeDirty ? ' · unsaved changes' : ''}</span></summary>
+			<p class="fed-memory-intro">${relationshipRole}. This trusted connection is its own federation group; neither side creates a matching local group. Each SAGE independently chooses which memory domains it shares and which copies it keeps.</p>
 		${roleKnown && html`<section class="fed-perm-section">
 			<div class="fed-perm-section-head">
 				<div>
-					<h4>Federation Access Controls</h4>
-					<p>Any active ordinary agent on this Mac can read domains ${peerName} exports by default. Add only explicit per-agent exceptions here; local Access Groups and same-named receiving domains are not required.</p>
+					<h4>Who can read from ${peerName}</h4>
+					<p>Active agents on this SAGE can read the domains ${peerName} shares. Choose an agent below to restrict its access.</p>
 				</div>
 			</div>
 			<div class="fed-agent-picker">
@@ -17789,36 +17777,11 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
 			</div>`}
 		</section>`}
 
-		${roleKnown && automaticNodeMessaging !== false && html`<section class="fed-perm-section fed-agent-section" aria-labelledby=${`fed-discovery-heading-${chain}`}>
-			<div class="fed-perm-section-head">
-				<div>
-					<h4 id=${`fed-discovery-heading-${chain}`}>Agent discovery on ${peerName}</h4>
-					<p>Who ${peerName} can find when it lists or searches for an agent on this SAGE. Flip the Visible switch on any agent in the directory above, or use these two buttons to move all of them at once. This is listing and search only: it never grants memory access, and a discovered agent still has to accept before anything is delivered. Agents with messaging blocked can remain visible as Not accepting.</p>
-				</div>
-				<span class="fed-discovery-summary" role="status" aria-live="polite">${agentExposure === null
-					? 'Loading…'
-					: (exposureMode === 'all'
-						? `All ${exposureCandidates.length} agents visible`
-						: (exposureMode === 'none'
-							? 'No agents visible'
-							: `${exposureSelection.size} of ${exposureCandidates.length} agents visible`))}${exposureBusy ? ' · saving…' : ''}</span>
-			</div>
-			<div class="fed-exposure-actions">
-				<button class="btn" disabled=${exposureBusy || agentExposure === null || exposureMode === 'all'}
-					onClick=${() => setAllAgentsVisible(true)}>Show all agents</button>
-				<button class="btn" disabled=${exposureBusy || agentExposure === null || exposureMode === 'none'}
-					onClick=${() => setAllAgentsVisible(false)}>Hide all agents</button>
-				<span class="muted">Changes apply immediately. Being visible only lets ${peerName} find and ask; it grants nothing.</span>
-			</div>
-			${exposureCandidates.length === 0 && agentExposure !== null && html`<div class="fed-agent-empty muted">No active local agents to choose from.</div>`}
-			${exposureErr && html`<div class="fed-err fed-perm-error" role="alert">${exposureErr}</div>`}
-		</section>`}
-
 		${roleKnown && html`<section class="fed-perm-section fed-agent-section">
 			<div class="fed-perm-section-head">
 				<div>
-					<h4>Agent-owned memory sharing</h4>
-					<p>Exporting an agent here explicitly grants ${peerName} live Read access to its owned domains, including future children. Agent discovery and messaging are handled separately above.</p>
+					<h4>Share an agent’s memory</h4>
+					<p>Export an agent to let ${peerName} read its owned domains, including future child domains.</p>
 				</div>
 			</div>
 			${peerAgentCompatibility.observed && !peerAgentCompatibility.fullySupported && html`
@@ -18028,6 +17991,8 @@ function FedPermissionsPanel({ conn, connectionStatus, onRevoke, revokeBusy, loc
                 ${syncSaveErr && html`<div class="fed-err fed-perm-error" role="alert">${syncSaveErr}</div>`}
             </div>`}
         </section>`}
+
+        </details>
 
         <section class="fed-perm-danger">
             <div>
